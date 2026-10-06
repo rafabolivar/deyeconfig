@@ -24,6 +24,6 @@ timeout = 10
 
 
 [inversor]
-# Mapa de registros del modelo de inversor (carpeta mapas/).
+# Mapa de registros del modelo de inversor (carpeta maps/).
 # Por defecto: Deye híbrido monofásico de baja tensión (SG0xLP1).
-mapa = "mapas/deye_sg0xlp1.toml"
+mapa = "maps/deye_sg0xlp1.toml"

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Lee toda la configuración de un inversor Deye a través del datalogger Solarman
-(Modbus TCP), usando un fichero de mapa de registros (carpeta mapas/).
+(Modbus TCP), usando un fichero de mapa de registros (carpeta maps/).
 Solo LEE registros. Guarda además una copia de seguridad en JSON con todos
 los registros en bruto del rango de configuración.
 
 Uso:
-    python deye_leer_config.py                  # muestra y guarda backup
-    python deye_leer_config.py --no-backup
-    python deye_leer_config.py --raw            # añade id, registro y valor en bruto
-    python deye_leer_config.py --config otro.toml
+    python deye_read_config.py                  # muestra y guarda backup
+    python deye_read_config.py --no-backup
+    python deye_read_config.py --raw            # añade id, registro y valor en bruto
+    python deye_read_config.py --config otro.toml
 """
 
 import argparse

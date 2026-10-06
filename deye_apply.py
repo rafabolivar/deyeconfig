@@ -3,10 +3,10 @@
 Aplica un perfil de configuración (profiles/*.toml) a un inversor Deye.
 
 Uso:
-    python deye_aplicar.py profiles/invierno.toml             # muestra qué cambiaría
-    python deye_aplicar.py profiles/invierno.toml --show   # ídem, de forma explícita
-    python deye_aplicar.py profiles/invierno.toml --apply   # escribe (pide confirmación)
-    python deye_aplicar.py profiles/invierno.toml --apply --yes   # escribe sin preguntar
+    python deye_apply.py profiles/invierno.toml             # muestra qué cambiaría
+    python deye_apply.py profiles/invierno.toml --show   # ídem, de forma explícita
+    python deye_apply.py profiles/invierno.toml --apply   # escribe (pide confirmación)
+    python deye_apply.py profiles/invierno.toml --apply --yes   # escribe sin preguntar
 
 Proceso:
   1. Valida el perfil completo (parámetros existentes, escribibles y en rango).
@@ -22,7 +22,7 @@ import tomllib
 from pathlib import Path
 
 from deye_comun import DEFAULT_CONFIG, cargar_config, conectar
-from deye_leer_config import guardar_backup, leer_registros
+from deye_read_config import guardar_backup, leer_registros
 from deye_mapa import (ErrorValor, a_registro, cargar_mapa, formatear, formatear_carga_tou,
                        hhmm, hora_a_registro)
 
@@ -38,7 +38,7 @@ def calcular_cambios(perfil: dict, mapa: dict, r: dict[int, int]):
     for ident, valor in perfil.get("parametros", {}).items():
         p = mapa["por_id"].get(ident)
         if p is None:
-            errores.append(f"{ident}: parámetro desconocido (consulta los ids con deye_leer_config.py --raw)")
+            errores.append(f"{ident}: parámetro desconocido (consulta los ids con deye_read_config.py --raw)")
             continue
         if not p.get("escribible"):
             errores.append(f"{ident}: parámetro de solo lectura, no se puede modificar desde un perfil")

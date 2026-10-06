@@ -1,5 +1,5 @@
 """
-Interpretación del mapa de registros (mapas/*.toml): carga del mapa,
+Interpretación del mapa de registros (maps/*.toml): carga del mapa,
 conversión registro -> texto legible y valor legible -> registro (con validación).
 """
 
@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 BASE = Path(__file__).parent
-MAPA_POR_DEFECTO = "mapas/deye_sg0xlp1.toml"
+MAPA_POR_DEFECTO = "maps/deye_sg0xlp1.toml"
 DIAS = "LMXJVSD"
 
 

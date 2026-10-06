@@ -4,8 +4,8 @@ Prueba de conexión con un inversor Deye a través del datalogger Solarman
 (Modbus TCP). Solo LEE registros, no escribe nada en el inversor.
 
 Uso:
-    python deye_test_conexion.py                 # usa ./config.toml
-    python deye_test_conexion.py --config otro.toml
+    python deye_test_connection.py                 # usa ./config.toml
+    python deye_test_connection.py --config otro.toml
 """
 
 import argparse

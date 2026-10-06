@@ -3,7 +3,7 @@
 # y la reserva para las horas punta. Ajusta los valores a tu instalación.
 #
 # Solo se modifican los parámetros que aparecen aquí; el resto no se toca.
-# Ids disponibles: python deye_leer_config.py --raw
+# Ids disponibles: python deye_read_config.py --raw
 #
 # Franjas alineadas con los periodos de la tarifa 2.0TD (días laborables):
 #   00-08 valle | 08-10 llano | 10-14 punta | 14-18 llano | 18-22 punta | 22-24 llano

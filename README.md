@@ -18,7 +18,7 @@ Edita `config.toml` con la IP y el número de serie de tu logger.
 ## Prueba de conexión
 
 ```bash
-.venv/bin/python deye_test_conexion.py
+.venv/bin/python deye_test_connection.py
 ```
 
 Solo lee registros; no modifica nada en el inversor.
@@ -28,8 +28,8 @@ Requiere Python 3.11 o superior.
 ## Leer la configuración del inversor
 
 ```bash
-.venv/bin/python deye_leer_config.py          # muestra todo y guarda backup
-.venv/bin/python deye_leer_config.py --raw    # añade el valor en bruto de cada registro
+.venv/bin/python deye_read_config.py          # muestra todo y guarda backup
+.venv/bin/python deye_read_config.py --raw    # añade el valor en bruto de cada registro
 ```
 
 Muestra toda la configuración: batería, carga desde red y generador, modo de trabajo,
@@ -43,10 +43,10 @@ Un perfil (`profiles/*.toml`) indica solo los parámetros que se quieren cambiar
 en unidades normales (A, %, V, "HH:MM", true/false). El resto no se toca.
 
 ```bash
-.venv/bin/python deye_aplicar.py profiles/invierno.toml             # muestra qué cambiaría
-.venv/bin/python deye_aplicar.py profiles/invierno.toml --show   # ídem, explícito
-.venv/bin/python deye_aplicar.py profiles/invierno.toml --apply   # escribe (pide confirmación)
-.venv/bin/python deye_aplicar.py profiles/invierno.toml --apply --yes   # sin confirmación (cron)
+.venv/bin/python deye_apply.py profiles/invierno.toml             # muestra qué cambiaría
+.venv/bin/python deye_apply.py profiles/invierno.toml --show   # ídem, explícito
+.venv/bin/python deye_apply.py profiles/invierno.toml --apply   # escribe (pide confirmación)
+.venv/bin/python deye_apply.py profiles/invierno.toml --apply --yes   # sin confirmación (cron)
 ```
 
 Sin `--apply` nunca se escribe nada. Con `--apply`:
@@ -73,7 +73,7 @@ carga_red = true
 ```
 
 - `[parametros]`: cualquier parámetro escribible del mapa, por su `id`.
-  Consulta los ids con `deye_leer_config.py --raw`.
+  Consulta los ids con `deye_read_config.py --raw`.
 - `[[tou]]`: franjas Time Of Use (1 a 6) con `hora`, `potencia`, `tension`, `soc`,
   `carga_red` y `carga_gen`. Las horas de inicio deben ser crecientes.
 
@@ -85,7 +85,7 @@ antes de aplicarlos.
 
 ## Mapas de registros
 
-Los registros de cada modelo se definen en `mapas/` (formato TOML), separados del código.
+Los registros de cada modelo se definen en `maps/` (formato TOML), separados del código.
 El mapa se elige en `config.toml` (`[inversor] mapa = ...`). Para añadir parámetros
 o soportar otro modelo, basta con editar o crear un mapa.
 
