@@ -28,29 +28,54 @@ timeout = 10
 map = "maps/deye_sg0xlp1.toml"
 
 [storm]
-# Storm mode (deye_storm.py): pre-charge the battery when storms are forecast.
-# Location for the weather forecast (decimal degrees).
+# Storm mode service (deye_storm.py): pre-charges the battery from the grid when
+# thunderstorms or very heavy rain are forecast (Open-Meteo forecast).
+
+# Location for the weather forecast (decimal degrees) and its time zone.
 latitude = 0.0
 longitude = 0.0
+timezone = "Europe/Madrid"
 
-# How many hours ahead to look for storms.
-lookahead_hours = 6
+# Seconds between weather forecast checks.
+forecast_interval = 900
+# Seconds between grid / battery checks while in storm mode (outage detection).
+grid_check_interval = 60
 
-# Activate storm mode if a storm is forecast and the battery SOC is below this (%).
-trigger_soc = 60
+# Planning: at planning_time, look forecast_hours ahead. If a storm is forecast,
+# charge from the grid up to target_soc, finishing at ready_by, or
+# storm_margin_minutes before the storm if it comes earlier.
+planning_time = "00:00"
+forecast_hours = 24
+ready_by = "07:30"
+storm_margin_minutes = 30
+target_soc = 80
 
-# SOC to charge to (and hold) from the grid while in storm mode (%).
-target_soc = 70
+# Battery level allowed while the grid is down in storm mode (%).
+outage_soc = 15
+# After an outage, recharge to target_soc as soon as the grid returns
+# (false = wait for the next planning run).
+recharge_after_outage = true
 
-# Weather codes considered a thunderstorm (WMO codes: 95, 96, 99 = thunderstorm).
+# Backup outside planning: if a storm is forecast within backup_hours and the
+# SOC is below backup_trigger_soc, charge immediately.
+backup_enabled = true
+backup_hours = 4
+backup_trigger_soc = 50
+
+# What counts as a storm: weather codes (WMO 95, 96, 99 = thunderstorm) and
+# heavy rain in mm/h with a minimum probability (%).
 storm_codes = [95, 96, 99]
-
-# Rain considered very heavy (mm/h) and minimum probability for it to count (%).
 heavy_rain_mm = 10.0
 min_probability = 50
 
-# Restore the previous configuration this many hours after the last storm hour.
+# Restore the previous configuration this many hours after the last storm hour,
+# and in any case after max_hours in storm mode (safety limit).
 grace_hours = 1
+max_hours = 36
 
-# Safety limit: restore after this many hours in storm mode in any case.
-max_hours = 24
+# Used to estimate the charging time.
+battery_nominal_voltage = 51.2
+charge_efficiency = 0.9
+
+# Safety limit of inverter writes per day.
+max_writes_per_day = 20

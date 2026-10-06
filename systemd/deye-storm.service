@@ -1,18 +1,24 @@
-# Storm mode check for deyeconfig (run by deye-storm.timer).
+# deyeconfig storm mode service: checks the weather forecast every
+# [storm] check_interval seconds and pre-charges the battery when storms are forecast.
 # Adjust User and the paths if you installed deyeconfig elsewhere, then:
-#   sudo cp systemd/deye-storm.* /etc/systemd/system/
+#   sudo cp systemd/deye-storm.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now deye-storm.timer
-# Logs: journalctl -u deye-storm.service
+#   sudo systemctl enable --now deye-storm.service
+# Logs: journalctl -u deye-storm.service -f
 
 [Unit]
-Description=deyeconfig storm mode check
+Description=deyeconfig storm mode
 Wants=network-online.target
 After=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/deye
-ExecStart=/home/ubuntu/deye/.venv/bin/python /home/ubuntu/deye/deye_storm.py --apply
-TimeoutStartSec=120
+ExecStart=/home/ubuntu/deye/.venv/bin/python /home/ubuntu/deye/deye_storm.py --daemon --apply
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

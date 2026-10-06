@@ -108,42 +108,70 @@ back to later.
 
 ## Storm mode
 
-`deye_storm.py` checks the weather forecast ([Open-Meteo](https://open-meteo.com/), free,
-no API key) and, if a thunderstorm or very heavy rain is expected and the battery is
-low, charges it from the grid in advance so it is ready for a possible power outage.
+`deye_storm.py` is a service that pre-charges the battery from the grid when
+thunderstorms or very heavy rain are forecast ([Open-Meteo](https://open-meteo.com/),
+free, no API key), so the house is ready for a possible power outage.
+
+How it works (all values configurable in the `[storm]` section of `config.toml`):
+
+1. **Planning** at `planning_time` (default 00:00, start of the off-peak period): if
+   a storm is forecast within the next `forecast_hours` (24), it calculates how long
+   it takes to charge from the current SOC to `target_soc` (80 %) and schedules the
+   grid charge to finish at `ready_by` (07:30), or `storm_margin_minutes` before the
+   storm if it comes earlier. If there is not enough time, it charges immediately.
+2. **Storm already happening** (the forecast for the current hour meets the
+   criteria): charges immediately while the grid is available.
+3. **Backup** outside planning: if a storm is forecast within `backup_hours` and
+   the SOC is below `backup_trigger_soc`, charges immediately.
+4. While in storm mode, `target_soc` is kept as the minimum battery level.
+5. **Outage protection**: the grid status is checked every `grid_check_interval`
+   seconds. If the grid goes down, all Time Of Use slots are lowered to
+   `outage_soc` (15 %) so the whole battery is available. When the grid returns,
+   the battery is recharged (`recharge_after_outage`).
+6. `grace_hours` after the last forecast storm hour, if the storm is no longer
+   forecast, or after `max_hours`, the configuration saved before storm mode
+   (`state/pre_storm.toml`) is restored.
+
+The Time Of Use slots are calculated by the service. Example: battery at 15 %,
+storm forecast at 18:00:
+
+| Slot | Start | SOC | Grid charge | Purpose |
+|---|---|---|---|---|
+| 1 | 00:00 | 15 % | No | Normal use until charging starts |
+| 2 | 03:55 | 80 % | Yes | Charge to 80 % by 07:30 |
+| 3-6 | 08:00, 12:00, 16:00, 20:00 | 80 % | Yes | Keep 80 % until the storm has passed |
+
+The inverter is only written when its configuration has to change, with a daily
+limit (`max_writes_per_day`). Every change is preceded by a backup in `backups/`.
 
 ```bash
-.venv/bin/python deye_storm.py                  # show what it would do (dry run)
-.venv/bin/python deye_storm.py --apply          # act on the inverter (no confirmation)
-.venv/bin/python deye_storm.py --assume-storm   # pretend a storm is forecast (testing, dry run only)
+.venv/bin/python deye_storm.py                    # single check, show what it would do
+.venv/bin/python deye_storm.py --apply            # single check, act on the inverter
+.venv/bin/python deye_storm.py --daemon --apply   # run as a service
+.venv/bin/python deye_storm.py --plan-now         # run the planning logic now
 ```
 
-How it works:
-
-1. If a storm is forecast within `lookahead_hours` and the battery SOC is below
-   `trigger_soc`, it saves the current configuration as a profile in
-   `state/pre_storm.toml` and enables grid charging with all Time Of Use slots
-   at `target_soc`. The inverter charges up to that level and holds it.
-2. While storms keep being forecast, storm mode stays active.
-3. `grace_hours` after the last forecast storm hour (or after `max_hours` as a
-   safety limit), the saved configuration is restored.
-
-The inverter is only written when the state changes. During a power outage the
-inverter runs off-grid and uses the battery down to its shutdown / low battery SOC.
-
-Settings are in the `[storm]` section of `config.toml` (location, look-ahead hours,
-SOC thresholds, which weather codes and how much rain count as a storm).
-
-### Running it automatically
-
-The `systemd/` folder contains a service and a timer that run the check every
-15 minutes. Adjust `User` and the paths in `deye-storm.service` if needed, then:
+Testing options (dry run only):
 
 ```bash
-sudo cp systemd/deye-storm.* /etc/systemd/system/
+.venv/bin/python deye_storm.py --assume-storm 18             # pretend a storm in 18 h
+.venv/bin/python deye_storm.py --assume-outage               # pretend the grid is down
+.venv/bin/python deye_storm.py --at '2026-10-08 00:05' --assume-storm 18   # pretend it is 00:05
+```
+
+**Requirement for outage protection:** the machine running the service and the
+network equipment must stay powered during an outage (e.g. connected to the
+inverter's backup output or a UPS).
+
+### Running it as a service
+
+Adjust `User` and the paths in `systemd/deye-storm.service` if needed, then:
+
+```bash
+sudo cp systemd/deye-storm.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now deye-storm.timer
-journalctl -u deye-storm.service    # logs
+sudo systemctl enable --now deye-storm.service
+journalctl -u deye-storm.service -f    # logs
 ```
 
 ## Register maps
