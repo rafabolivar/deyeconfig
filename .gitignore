@@ -12,3 +12,6 @@ backups/
 # Personal profiles (only the examples are part of the repository)
 profiles/*
 !profiles/examples/
+
+# Storm mode state (deye_storm.py)
+state/

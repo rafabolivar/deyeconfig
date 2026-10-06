@@ -26,3 +26,31 @@ timeout = 10
 # Register map for the inverter model (maps/ folder).
 # Default: Deye single-phase low-voltage hybrid (SG0xLP1).
 map = "maps/deye_sg0xlp1.toml"
+
+[storm]
+# Storm mode (deye_storm.py): pre-charge the battery when storms are forecast.
+# Location for the weather forecast (decimal degrees).
+latitude = 0.0
+longitude = 0.0
+
+# How many hours ahead to look for storms.
+lookahead_hours = 6
+
+# Activate storm mode if a storm is forecast and the battery SOC is below this (%).
+trigger_soc = 60
+
+# SOC to charge to (and hold) from the grid while in storm mode (%).
+target_soc = 70
+
+# Weather codes considered a thunderstorm (WMO codes: 95, 96, 99 = thunderstorm).
+storm_codes = [95, 96, 99]
+
+# Rain considered very heavy (mm/h) and minimum probability for it to count (%).
+heavy_rain_mm = 10.0
+min_probability = 50
+
+# Restore the previous configuration this many hours after the last storm hour.
+grace_hours = 1
+
+# Safety limit: restore after this many hours in storm mode in any case.
+max_hours = 24

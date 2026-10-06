@@ -1,0 +1,18 @@
+# Storm mode check for deyeconfig (run by deye-storm.timer).
+# Adjust User and the paths if you installed deyeconfig elsewhere, then:
+#   sudo cp systemd/deye-storm.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now deye-storm.timer
+# Logs: journalctl -u deye-storm.service
+
+[Unit]
+Description=deyeconfig storm mode check
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/deye
+ExecStart=/home/ubuntu/deye/.venv/bin/python /home/ubuntu/deye/deye_storm.py --apply
+TimeoutStartSec=120

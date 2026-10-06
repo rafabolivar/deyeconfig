@@ -106,6 +106,46 @@ Useful as a starting point for your own profiles (export, remove the lines you d
 not want to change, adjust the rest) or to save a configuration you want to go
 back to later.
 
+## Storm mode
+
+`deye_storm.py` checks the weather forecast ([Open-Meteo](https://open-meteo.com/), free,
+no API key) and, if a thunderstorm or very heavy rain is expected and the battery is
+low, charges it from the grid in advance so it is ready for a possible power outage.
+
+```bash
+.venv/bin/python deye_storm.py                  # show what it would do (dry run)
+.venv/bin/python deye_storm.py --apply          # act on the inverter (no confirmation)
+.venv/bin/python deye_storm.py --assume-storm   # pretend a storm is forecast (testing, dry run only)
+```
+
+How it works:
+
+1. If a storm is forecast within `lookahead_hours` and the battery SOC is below
+   `trigger_soc`, it saves the current configuration as a profile in
+   `state/pre_storm.toml` and enables grid charging with all Time Of Use slots
+   at `target_soc`. The inverter charges up to that level and holds it.
+2. While storms keep being forecast, storm mode stays active.
+3. `grace_hours` after the last forecast storm hour (or after `max_hours` as a
+   safety limit), the saved configuration is restored.
+
+The inverter is only written when the state changes. During a power outage the
+inverter runs off-grid and uses the battery down to its shutdown / low battery SOC.
+
+Settings are in the `[storm]` section of `config.toml` (location, look-ahead hours,
+SOC thresholds, which weather codes and how much rain count as a storm).
+
+### Running it automatically
+
+The `systemd/` folder contains a service and a timer that run the check every
+15 minutes. Adjust `User` and the paths in `deye-storm.service` if needed, then:
+
+```bash
+sudo cp systemd/deye-storm.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now deye-storm.timer
+journalctl -u deye-storm.service    # logs
+```
+
 ## Register maps
 
 The registers of each model are defined in `maps/` (TOML format), separate from the
