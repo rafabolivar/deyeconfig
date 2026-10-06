@@ -1,4 +1,4 @@
-# deyeconfig
+# Deyeconfig
 
 **English** | [Español](README.es.md)
 
