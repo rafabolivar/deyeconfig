@@ -44,12 +44,12 @@ en unidades normales (A, %, V, "HH:MM", true/false). El resto no se toca.
 
 ```bash
 .venv/bin/python deye_aplicar.py perfiles/invierno.toml             # muestra qué cambiaría
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml --mostrar   # ídem, explícito
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml --aplicar   # escribe (pide confirmación)
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml --aplicar --si   # sin confirmación (cron)
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml --show   # ídem, explícito
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml --apply   # escribe (pide confirmación)
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml --apply --yes   # sin confirmación (cron)
 ```
 
-Sin `--aplicar` nunca se escribe nada. Con `--aplicar`:
+Sin `--apply` nunca se escribe nada. Con `--apply`:
 
 1. Se valida el perfil completo (parámetros existentes, escribibles y en rango).
    Ante cualquier error no se escribe nada.

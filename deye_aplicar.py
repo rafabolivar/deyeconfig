@@ -4,15 +4,15 @@ Aplica un perfil de configuración (perfiles/*.toml) a un inversor Deye.
 
 Uso:
     python deye_aplicar.py perfiles/invierno.toml             # muestra qué cambiaría
-    python deye_aplicar.py perfiles/invierno.toml --mostrar   # ídem, de forma explícita
-    python deye_aplicar.py perfiles/invierno.toml --aplicar   # escribe (pide confirmación)
-    python deye_aplicar.py perfiles/invierno.toml --aplicar --si   # escribe sin preguntar
+    python deye_aplicar.py perfiles/invierno.toml --show   # ídem, de forma explícita
+    python deye_aplicar.py perfiles/invierno.toml --apply   # escribe (pide confirmación)
+    python deye_aplicar.py perfiles/invierno.toml --apply --yes   # escribe sin preguntar
 
 Proceso:
   1. Valida el perfil completo (parámetros existentes, escribibles y en rango).
      Si hay cualquier error, no se escribe nada.
   2. Lee la configuración actual y muestra solo lo que cambia (actual -> nuevo).
-  3. Con --aplicar: guarda una copia de seguridad, escribe los registros
+  3. Con --apply: guarda una copia de seguridad, escribe los registros
      modificados y los vuelve a leer para verificar.
 """
 
@@ -151,9 +151,9 @@ def main():
     parser = argparse.ArgumentParser(description="Aplica un perfil de configuración al inversor Deye")
     parser.add_argument("perfil", type=Path, help="Fichero de perfil (p. ej. perfiles/invierno.toml)")
     modo = parser.add_mutually_exclusive_group()
-    modo.add_argument("--mostrar", action="store_true", help="Solo mostrar qué cambiaría (por defecto)")
-    modo.add_argument("--aplicar", action="store_true", help="Escribir los cambios en el inversor")
-    parser.add_argument("--si", action="store_true", help="Con --aplicar, no pedir confirmación")
+    modo.add_argument("--show", action="store_true", help="Solo mostrar qué cambiaría (por defecto)")
+    modo.add_argument("--apply", action="store_true", help="Escribir los cambios en el inversor")
+    parser.add_argument("--yes", action="store_true", help="Con --apply, no pedir confirmación")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Ruta al fichero de configuración (por defecto: config.toml)")
     args = parser.parse_args()
@@ -190,12 +190,12 @@ def main():
     for a in avisos:
         print(f"\nAVISO: {a}")
 
-    if not args.aplicar:
-        print("\nModo simulación: no se ha modificado nada. Usa --aplicar para escribir los cambios.")
+    if not args.apply:
+        print("\nModo simulación: no se ha modificado nada. Usa --apply para escribir los cambios.")
         return
 
-    if not args.si:
-        if input("\n¿Aplicar estos cambios al inversor? [s/N] ").strip().lower() not in ("s", "si", "sí"):
+    if not args.yes:
+        if input("\n¿Aplicar estos cambios al inversor? [s/y/N] ").strip().lower() not in ("s", "si", "sí", "y", "yes"):
             print("Cancelado. No se ha modificado nada.")
             return
 
