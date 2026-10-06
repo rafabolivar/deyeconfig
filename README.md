@@ -85,7 +85,7 @@ deye_common.py            Shared: configuration loading, connection, register re
 deye_map.py               Shared: register map handling and value conversions
 deye_tariff.py            Shared: tariff periods (off-peak, mid, peak), weekends and holidays
 maps/                     Register maps per inverter model (TOML)
-profiles/examples/        Example profiles (winter, summer)
+profiles/examples/        Example profiles (autumn, winter, summer)
 profiles/                 Your own profiles (ignored by git)
 systemd/                  systemd unit for the storm mode service
 config.example.toml       Configuration template
@@ -183,8 +183,34 @@ Notes:
   charging (some firmwares use bit 2). They are shown as "other bits" and always
   preserved when writing.
 - `profiles/examples/` contains examples aligned with the Spanish 2.0TD tariff
-  periods. Copy them to `profiles/` and adjust them: files directly in `profiles/`
+  periods (see [Seasonal profiles](#seasonal-profiles)). Copy them to `profiles/` and adjust them: files directly in `profiles/`
   are excluded from the repository, so your personal settings are never committed.
+
+### Seasonal profiles
+
+Examples for sunny days in autumn and winter (`profiles/examples/autumn.toml` and
+`winter.toml`):
+
+| Slot | Start | Period | SOC | Grid charge | Effect |
+|---|---|---|---|---|---|
+| 1 | 00:00 | Off-peak | 50 % autumn / 60 % winter | Yes | Charge at off-peak price; the battery does not go below this level at night |
+| 2 | 08:00 | Mid | 15 % | No | Battery available to start the day |
+| 3 | 10:00 | Peak | 15 % | No | Battery available; the sun charges it |
+| 4 | 14:00 | Mid | 15 % | No | Battery available |
+| 5 | 18:00 | Peak | 15 % | No | Battery available for the evening peak |
+| 6 | 22:00 | Mid | 15 % | No | Battery available |
+
+- The night charge gives battery for the first hours of the day, when the sun is
+  still weak and grid energy is expensive, and leaves room for the solar surplus:
+  charging more would fill the battery with grid energy and the surplus would be
+  exported at a low price. Autumn has more sun, so it charges less.
+- At night the house uses cheap off-peak grid energy instead of the battery.
+- Gentle grid charge at 25 A (about 3.5 h), and grid draw limited to 4000 W
+  (peak shaving) to stay below the contracted power.
+- The storm mode service is compatible with these profiles: it saves the
+  configuration when it starts and restores it when it ends.
+
+`profiles/examples/summer.toml` is an earlier example without grid charging.
 
 ## Exporting the current configuration
 
@@ -251,6 +277,8 @@ tariff on a weekday:
 - **Emergency charge** in a peak period: the peak slots charge up to
   `emergency_soc` (50 %) until that peak period ends. The rest is completed in the
   next mid or off-peak period.
+- **Charge current**: the grid charge current is set to `charge_current` (40 A)
+  to charge quickly, even if your daily profile uses a lower one.
 - **Grid power limit**: the inverter's grid peak shaving is set to
   `grid_power_limit` (4000 W) so that the battery charge plus the house load never
   exceed the contracted power; the inverter reduces the battery charge first.
@@ -369,6 +397,7 @@ inverter's backup output or a UPS). The logger is powered by the inverter.
 | `emergency_soc` | 50 | Emergency in peak periods: SOC below this, charge up to this (%) |
 | `emergency_hours` | 2 | Emergency: storm happening or due within this many hours |
 | `grid_power_limit` | 4000 | Maximum grid draw in storm mode (W, inverter peak shaving); 0 = do not change |
+| `charge_current` | 40 | Grid charge current in storm mode (A); 0 = do not change |
 | `storm_codes` | [95, 96, 99] | WMO weather codes considered a thunderstorm |
 | `heavy_rain_mm` | 10.0 | Rain considered very heavy (mm/h) |
 | `min_probability` | 50 | Minimum probability for heavy rain to count (%) |

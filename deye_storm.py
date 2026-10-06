@@ -18,7 +18,8 @@ In storm mode the Time Of Use slots follow the tariff periods:
   off-peak  grid charge up to 'charge_soc' (100 %)
   mid       grid charge only up to 'hold_soc' (80 %)
   peak      no grid charge, battery kept at 'hold_soc' (emergency: charge up to 'emergency_soc')
-Grid draw is limited to 'grid_power_limit' (inverter peak shaving).
+Grid draw is limited to 'grid_power_limit' (inverter peak shaving) and the grid
+charge current is set to 'charge_current'.
 If the grid goes down, all slots are lowered to 'outage_soc' so the whole battery
 is available. Storm mode ends 'grace_hours' after the last storm hour, when the
 storm is no longer forecast, when the next storm comes after the next off-peak
@@ -79,6 +80,7 @@ DEFAULTS = {
     "emergency_soc": 50,
     "emergency_hours": 2,
     "grid_power_limit": 4000,
+    "charge_current": 40,
     "storm_codes": [95, 96, 99],
     "heavy_rain_mm": 10.0,
     "min_probability": 50,
@@ -114,6 +116,8 @@ def load_settings(config_path: Path) -> tuple[dict, Tariff]:
         errors.append("[storm] requires outage_soc <= hold_soc <= charge_soc")
     if not isinstance(s["grid_power_limit"], int) or not 0 <= s["grid_power_limit"] <= 8000:
         errors.append("[storm] grid_power_limit must be between 0 (disabled) and 8000 W")
+    if not isinstance(s["charge_current"], int) or not 0 <= s["charge_current"] <= 120:
+        errors.append("[storm] charge_current must be between 0 (do not change) and 120 A")
     if errors:
         sys.exit("ERROR in configuration:\n  - " + "\n  - ".join(errors))
     return s, Tariff(cfg.get("tariff", {}), s["tz"])
@@ -307,6 +311,8 @@ class StormService:
         params = {"grid_charge": True, "time_of_use": "MTWTFSS"}
         if s["grid_power_limit"]:
             params.update(grid_peak_shaving=True, grid_peak_shaving_power=s["grid_power_limit"])
+        if s["charge_current"]:
+            params["grid_charge_current"] = s["charge_current"]
         period = self.tariff.period_at(now)[0]
         return (f"{period} period" + (", emergency charge" if emergency else ""),
                 {"parameters": params, "tou": tou})

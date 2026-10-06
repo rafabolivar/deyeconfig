@@ -92,7 +92,7 @@ deye_common.py            Común: carga de configuración, conexión, lectura de
 deye_map.py               Común: gestión del mapa de registros y conversión de valores
 deye_tariff.py            Común: periodos de la tarifa (valle, llano, punta), fines de semana y festivos
 maps/                     Mapas de registros por modelo de inversor (TOML)
-profiles/examples/        Perfiles de ejemplo (winter, summer)
+profiles/examples/        Perfiles de ejemplo (autumn, winter, summer)
 profiles/                 Tus perfiles (ignorados por git)
 systemd/                  Unidad systemd del servicio de modo tormenta
 config.example.toml       Plantilla de configuración
@@ -191,9 +191,35 @@ Notas:
   red y generador (algunos firmwares usan el bit 2). Se muestran como "other bits" y
   siempre se conservan al escribir.
 - `profiles/examples/` contiene ejemplos alineados con los periodos de la tarifa
-  2.0TD. Cópialos a `profiles/` y ajústalos: los ficheros que estén directamente en
+  2.0TD (ver [Perfiles de temporada](#perfiles-de-temporada)). Cópialos a `profiles/` y ajústalos: los ficheros que estén directamente en
   `profiles/` quedan fuera del repositorio, así que tu configuración personal nunca
   se publica.
+
+### Perfiles de temporada
+
+Ejemplos para días de sol en otoño e invierno (`profiles/examples/autumn.toml` y
+`winter.toml`):
+
+| Franja | Inicio | Periodo | SOC | Carga desde red | Efecto |
+|---|---|---|---|---|---|
+| 1 | 00:00 | Valle | 50 % otoño / 60 % invierno | Sí | Carga a precio valle; por la noche la batería no baja de ese nivel |
+| 2 | 08:00 | Llano | 15 % | No | Batería disponible para empezar el día |
+| 3 | 10:00 | Punta | 15 % | No | Batería disponible; el sol la va cargando |
+| 4 | 14:00 | Llano | 15 % | No | Batería disponible |
+| 5 | 18:00 | Punta | 15 % | No | Batería disponible para la punta de la tarde |
+| 6 | 22:00 | Llano | 15 % | No | Batería disponible |
+
+- La carga nocturna da batería para las primeras horas del día, cuando el sol aún
+  es débil y la energía de la red es cara, y deja sitio para el excedente solar:
+  cargar más llenaría la batería con energía de la red y el excedente se
+  exportaría a precio bajo. En otoño hay más sol, así que carga menos.
+- Por la noche la casa usa la energía barata de la red en lugar de la batería.
+- Carga suave a 25 A (unas 3,5 horas) y consumo de red limitado a 4000 W
+  (*peak shaving*) para no superar la potencia contratada.
+- El servicio de modo tormenta es compatible con estos perfiles: guarda la
+  configuración al activarse y la restaura al terminar.
+
+`profiles/examples/summer.toml` es un ejemplo anterior sin carga desde red.
 
 ## Exportar la configuración actual
 
@@ -262,6 +288,8 @@ por defecto, en un día laborable:
 - **Carga de emergencia** en punta: las franjas de punta cargan hasta
   `emergency_soc` (50 %) hasta que termina ese periodo punta. El resto se completa
   en el siguiente llano o valle.
+- **Corriente de carga**: la corriente de carga desde red se fija en
+  `charge_current` (40 A) para cargar rápido, aunque tu perfil diario use una menor.
 - **Límite de potencia de red**: el *peak shaving* de red del inversor se fija en
   `grid_power_limit` (4000 W) para que la carga de la batería y el consumo de la
   casa juntos nunca superen la potencia contratada; el inversor recorta primero la
@@ -385,6 +413,7 @@ salida de respaldo del inversor o a un SAI). El logger se alimenta del propio in
 | `emergency_soc` | 50 | Emergencia en punta: SOC por debajo de este valor; carga hasta él (%) |
 | `emergency_hours` | 2 | Emergencia: tormenta en curso o a menos de estas horas |
 | `grid_power_limit` | 4000 | Consumo máximo de red en modo tormenta (W, *peak shaving* del inversor); 0 = no cambiarlo |
+| `charge_current` | 40 | Corriente de carga desde red en modo tormenta (A); 0 = no cambiarla |
 | `storm_codes` | [95, 96, 99] | Códigos meteorológicos WMO considerados tormenta |
 | `heavy_rain_mm` | 10.0 | Lluvia considerada muy intensa (mm/h) |
 | `min_probability` | 50 | Probabilidad mínima para que cuente la lluvia intensa (%) |

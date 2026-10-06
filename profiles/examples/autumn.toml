@@ -1,7 +1,7 @@
-# EXAMPLE profile: winter, sunny days.
-# Charges the battery from the grid in the off-peak period (00:00-08:00) up to 60 %,
+# EXAMPLE profile: autumn, sunny days.
+# Charges the battery from the grid in the off-peak period (00:00-08:00) up to 50 %,
 # so there is battery to start the day, and leaves room for the solar surplus.
-# In the off-peak period the battery does not go below 60 %, so the house uses
+# In the off-peak period the battery does not go below 50 %, so the house uses
 # cheap grid energy at night. The rest of the day the battery can be used down
 # to 15 %. Adjust the values to your installation.
 #
@@ -11,11 +11,11 @@
 # Slots aligned with the Spanish 2.0TD tariff periods (weekdays):
 #   00-08 off-peak | 08-10 mid | 10-14 peak | 14-18 mid | 18-22 peak | 22-24 mid
 
-description = "Winter (sunny days): off-peak grid charge up to 60 %"
+description = "Autumn (sunny days): off-peak grid charge up to 50 %"
 
 [parameters]
 grid_charge = true
-grid_charge_current = 25            # A, gentle charge: ~3.5 h from 15 % to 60 %
+grid_charge_current = 25            # A, gentle charge: ~3.5 h from 15 % to 50 %
 time_of_use = "MTWTFSS"
 grid_peak_shaving = true            # limit grid draw below the contracted power
 grid_peak_shaving_power = 4000      # W
@@ -24,7 +24,7 @@ grid_peak_shaving_power = 4000      # W
 slot = 1
 time = "00:00"
 power = 6000
-soc = 60
+soc = 50
 grid_charge = true
 
 [[tou]]

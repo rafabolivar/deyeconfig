@@ -70,6 +70,10 @@ emergency_hours = 2
 # peak shaving, to stay below the contracted power. 0 = do not change it.
 grid_power_limit = 4000
 
+# Grid charge current in storm mode (A), to charge quickly even if your daily
+# profile uses a lower current. Restored when storm mode ends. 0 = do not change it.
+charge_current = 40
+
 # What counts as a storm: weather codes (WMO 95, 96, 99 = thunderstorm) and
 # heavy rain in mm/h with a minimum probability (%).
 storm_codes = [95, 96, 99]
