@@ -41,9 +41,10 @@ forecast_interval = 900
 # Seconds between grid / battery checks while in storm mode (outage detection).
 grid_check_interval = 60
 
-# Planning: at planning_time, look forecast_hours ahead. If a storm is forecast,
-# charge from the grid up to target_soc, finishing at ready_by, or
-# storm_margin_minutes before the storm if it comes earlier.
+# Planning window from planning_time to ready_by (off-peak period): on every
+# forecast check, look forecast_hours ahead. If a storm is forecast, charge from
+# the grid up to target_soc, finishing at ready_by, or storm_margin_minutes
+# before the storm if it comes earlier.
 planning_time = "00:00"
 forecast_hours = 24
 ready_by = "07:30"
