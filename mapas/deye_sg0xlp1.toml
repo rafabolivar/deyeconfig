@@ -1,0 +1,452 @@
+# Mapa de registros de configuración: Deye híbrido monofásico de baja tensión
+# (SUN-xK-SG0xLP1: SG03LP1, SG04LP1, SG05LP1...).
+#
+# Fuentes: protocolo Modbus Deye V118 y definición "deye_hybrid.yaml" del proyecto
+# ha-solarman (https://github.com/davidrapan/ha-solarman). Verificado con un
+# SUN-6K-SG03LP1-EU.
+#
+# Tipos:
+#   num     valor * escala, con unidad
+#   enum    valor traducido con la tabla "opciones"
+#   switch  0 = No, distinto de 0 = Sí
+#   bit     Sí/No según el bit indicado en "bit"
+#   dias    registro Time Of Use: bit0 activo, bits 1-7 lunes..domingo
+#   fecha   reloj del inversor (3 registros)
+
+[info]
+modelo = "Deye SUN-xK-SG0xLP1 (híbrido monofásico BT)"
+rango_backup = [0, 340]
+
+[tou]
+franjas = 6
+hora = 250
+potencia = 256
+tension = 262
+soc = 268
+carga = 274
+opciones_carga = { "0" = "No", "1" = "Red", "2" = "Generador", "3" = "Red + Gen" }
+
+# ---------------------------------------------------------------- General
+[[param]]
+grupo = "General"
+reg = 22
+nombre = "Reloj del inversor"
+tipo = "fecha"
+
+[[param]]
+grupo = "General"
+reg = 21
+nombre = "Tiempo de autotest"
+tipo = "num"
+unidad = "s"
+
+# ---------------------------------------------------------------- Batería
+[[param]]
+grupo = "Batería"
+reg = 200
+nombre = "Tipo de control de batería"
+tipo = "enum"
+opciones = { "0" = "Plomo (4 etapas)", "1" = "Litio" }
+
+[[param]]
+grupo = "Batería"
+reg = 325
+nombre = "Protocolo BMS"
+tipo = "enum"
+opciones = { "0" = "PYLON", "1" = "Tianbangda", "2" = "KOK", "3" = "Keith", "4" = "Toppai", "5" = "Peneng 485" }
+
+[[param]]
+grupo = "Batería"
+reg = 213
+nombre = "Modo de operación"
+tipo = "enum"
+opciones = { "0" = "Por tensión", "1" = "Por capacidad (SOC)", "2" = "Sin batería" }
+
+[[param]]
+grupo = "Batería"
+reg = 204
+nombre = "Capacidad"
+tipo = "num"
+unidad = "Ah"
+
+[[param]]
+grupo = "Batería"
+reg = 210
+nombre = "Corriente máx. de carga"
+tipo = "num"
+unidad = "A"
+
+[[param]]
+grupo = "Batería"
+reg = 211
+nombre = "Corriente máx. de descarga"
+tipo = "num"
+unidad = "A"
+
+[[param]]
+grupo = "Batería"
+reg = 217
+nombre = "SOC de apagado"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Batería"
+reg = 218
+nombre = "SOC de rearranque"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Batería"
+reg = 219
+nombre = "SOC bajo"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Batería"
+reg = 220
+nombre = "Tensión de apagado"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 221
+nombre = "Tensión de rearranque"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 222
+nombre = "Tensión baja"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 201
+nombre = "Tensión de ecualización"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 202
+nombre = "Tensión de absorción"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 203
+nombre = "Tensión de flotación"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 205
+nombre = "Tensión de batería vacía"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Batería"
+reg = 207
+nombre = "Ciclo de ecualización"
+tipo = "num"
+unidad = "días"
+
+[[param]]
+grupo = "Batería"
+reg = 208
+nombre = "Duración de ecualización"
+tipo = "num"
+escala = 0.5
+unidad = "h"
+
+[[param]]
+grupo = "Batería"
+reg = 214
+nombre = "Despertar batería"
+tipo = "switch"
+
+[[param]]
+grupo = "Batería"
+reg = 215
+nombre = "Resistencia interna"
+tipo = "num"
+unidad = "mΩ"
+
+[[param]]
+grupo = "Batería"
+reg = 216
+nombre = "Eficiencia de carga"
+tipo = "num"
+escala = 0.1
+unidad = "%"
+
+# ---------------------------------------------------------------- Carga desde red / generador
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 232
+nombre = "Carga desde red"
+tipo = "switch"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 230
+nombre = "Corriente de carga desde red"
+tipo = "num"
+unidad = "A"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 229
+nombre = "SOC de inicio de carga desde red"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 228
+nombre = "Tensión de inicio de carga desde red"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 231
+nombre = "Carga desde generador"
+tipo = "switch"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 227
+nombre = "Corriente de carga desde generador"
+tipo = "num"
+unidad = "A"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 226
+nombre = "SOC de inicio de carga desde generador"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 225
+nombre = "Tensión de inicio de carga desde generador"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Carga desde red y generador"
+reg = 242
+nombre = "Señal de carga"
+tipo = "enum"
+opciones = { "0" = "Normal", "1" = "Red", "2" = "Generador", "3" = "Ambos" }
+
+# ---------------------------------------------------------------- Modo de trabajo
+[[param]]
+grupo = "Modo de trabajo"
+reg = 244
+nombre = "Modo de trabajo"
+tipo = "enum"
+opciones = { "0" = "Exportar primero", "1" = "Zero export a carga", "2" = "Zero export a CT" }
+
+[[param]]
+grupo = "Modo de trabajo"
+reg = 243
+nombre = "Prioridad de energía"
+tipo = "enum"
+opciones = { "0" = "Batería primero", "1" = "Carga primero" }
+
+[[param]]
+grupo = "Modo de trabajo"
+reg = 247
+nombre = "Exportar excedentes"
+tipo = "switch"
+
+[[param]]
+grupo = "Modo de trabajo"
+reg = 245
+nombre = "Potencia máx. de exportación"
+tipo = "num"
+unidad = "W"
+
+[[param]]
+grupo = "Modo de trabajo"
+reg = 206
+nombre = "Potencia zero export"
+tipo = "num"
+unidad = "W"
+
+[[param]]
+grupo = "Modo de trabajo"
+reg = 53
+nombre = "Potencia FV máxima"
+tipo = "num"
+unidad = "W"
+
+[[param]]
+grupo = "Modo de trabajo"
+reg = 248
+nombre = "Time Of Use"
+tipo = "dias"
+
+# ---------------------------------------------------------------- Red
+[[param]]
+grupo = "Red"
+reg = 285
+nombre = "Frecuencia de red"
+tipo = "enum"
+opciones = { "0" = "50 Hz", "1" = "60 Hz" }
+
+[[param]]
+grupo = "Red"
+reg = 282
+nombre = "Tiempo de reconexión"
+tipo = "num"
+unidad = "s"
+
+[[param]]
+grupo = "Red"
+reg = 287
+nombre = "Protección tensión alta"
+tipo = "num"
+escala = 0.1
+unidad = "V"
+
+[[param]]
+grupo = "Red"
+reg = 288
+nombre = "Protección tensión baja"
+tipo = "num"
+escala = 0.1
+unidad = "V"
+
+[[param]]
+grupo = "Red"
+reg = 289
+nombre = "Protección frecuencia alta"
+tipo = "num"
+escala = 0.01
+unidad = "Hz"
+
+[[param]]
+grupo = "Red"
+reg = 290
+nombre = "Protección frecuencia baja"
+tipo = "num"
+escala = 0.01
+unidad = "Hz"
+
+[[param]]
+grupo = "Red"
+reg = 280
+nombre = "Peak shaving de red"
+tipo = "bit"
+bit = 8
+
+[[param]]
+grupo = "Red"
+reg = 293
+nombre = "Potencia peak shaving de red"
+tipo = "num"
+unidad = "W"
+
+[[param]]
+grupo = "Red"
+reg = 280
+nombre = "Corte de exportación de microinversor"
+tipo = "bit"
+bit = 0
+
+# ---------------------------------------------------------------- Puerto GEN / SmartLoad
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 235
+nombre = "Modo del puerto GEN"
+tipo = "enum"
+opciones = { "0" = "Generador", "1" = "SmartLoad", "2" = "Microinversor" }
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 237
+nombre = "SmartLoad: SOC de apagado"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 239
+nombre = "SmartLoad: SOC de encendido"
+tipo = "num"
+unidad = "%"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 236
+nombre = "SmartLoad: tensión de apagado"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 238
+nombre = "SmartLoad: tensión de encendido"
+tipo = "num"
+escala = 0.01
+unidad = "V"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 241
+nombre = "Generador: potencia FV mínima"
+tipo = "num"
+unidad = "W"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 223
+nombre = "Generador: tiempo de funcionamiento"
+tipo = "num"
+escala = 0.1
+unidad = "h"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 224
+nombre = "Generador: tiempo de enfriamiento"
+tipo = "num"
+escala = 0.1
+unidad = "h"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 292
+nombre = "Potencia peak shaving de generador"
+tipo = "num"
+unidad = "W"
+
+[[param]]
+grupo = "Puerto GEN / SmartLoad"
+reg = 280
+nombre = "Peak shaving de generador"
+tipo = "bit"
+bit = 4

@@ -22,3 +22,8 @@ slave_id = 1
 # Tiempo máximo de espera de la conexión, en segundos.
 timeout = 10
 
+
+[inversor]
+# Mapa de registros del modelo de inversor (carpeta mapas/).
+# Por defecto: Deye híbrido monofásico de baja tensión (SG0xLP1).
+mapa = "mapas/deye_sg0xlp1.toml"
