@@ -117,3 +117,25 @@ def time_to_register(value, name: str) -> int:
         raise InvalidValue(f"{name}: time {value!r} out of range")
     return h * 100 + m
 
+
+
+# ------------------------------------------------------------------ register -> profile value
+
+def from_register(p: dict, r: dict[int, int]):
+    """Convert a register value to the value used in profiles (inverse of to_register)."""
+    v = r[p["reg"]]
+    kind = p["type"]
+    if kind == "num":
+        value = v * p.get("scale", 1)
+        return int(value) if float(value).is_integer() else round(value, 4)
+    if kind == "enum":
+        return p["options"].get(str(v), v)
+    if kind == "switch":
+        return bool(v)
+    if kind == "bit":
+        return bool(v >> p["bit"] & 1)
+    if kind == "days":
+        if not v & 1:
+            return False
+        return "".join(d if v >> (i + 1) & 1 else "-" for i, d in enumerate(DAYS))
+    return None

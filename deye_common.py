@@ -39,7 +39,7 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict:
 
 
 def connect(conf: dict) -> PySolarmanV5:
-    print(f"Connecting to {conf['ip']}:{conf['port']} (logger {conf['serial']})...")
+    print(f"Connecting to {conf['ip']}:{conf['port']} (logger {conf['serial']})...", file=sys.stderr)
     try:
         return PySolarmanV5(conf["ip"], conf["serial"], port=conf["port"],
                             mb_slave_id=conf["slave_id"], socket_timeout=conf["timeout"],

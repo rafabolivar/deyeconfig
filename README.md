@@ -87,6 +87,22 @@ voltages...). This is controlled by `writable` in the map.
 The profiles in `profiles/` are examples: review them and adjust them to your
 installation before applying them.
 
+## Exporting the current configuration as a profile
+
+```bash
+.venv/bin/python deye_export.py                            # print the profile to the screen
+.venv/bin/python deye_export.py -o profiles/current.toml   # save it to a file
+.venv/bin/python deye_export.py -o profiles/current.toml --force   # overwrite if it exists
+```
+
+Creates a profile with the inverter's current values: all writable parameters and
+the 6 Time Of Use slots, ready to be applied with `deye_apply.py`. Read-only
+parameters are included as comments, for reference. Read-only.
+
+Useful as a starting point for your own profiles (export, remove the lines you do
+not want to change, adjust the rest) or to save a configuration you want to go
+back to later.
+
 ## Register maps
 
 The registers of each model are defined in `maps/` (TOML format), separate from the
