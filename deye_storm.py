@@ -5,7 +5,8 @@ very heavy rain are forecast, so the house is ready for a possible power outage.
 
 Strategy (all values configurable in the [storm] section of config.toml):
 
-  1. Planning at 'planning_time' (default 00:00, start of the off-peak period):
+  1. Planning window from 'planning_time' to 'ready_by' (default 00:00-07:30,
+     off-peak period), on every forecast check:
      if a storm is forecast within the next 'forecast_hours', plan a grid charge
      from the current SOC up to 'target_soc', finishing at 'ready_by' (07:30) or
      'storm_margin_minutes' before the storm, whichever comes first.
@@ -27,7 +28,7 @@ Usage:
     python deye_storm.py                     # single check, show what it would do
     python deye_storm.py --apply             # single check, act on the inverter
     python deye_storm.py --daemon --apply    # run as a service
-    python deye_storm.py --plan-now          # run the planning logic now, as if it were planning_time
+    python deye_storm.py --plan-now          # run the planning logic now, as if in the planning window
     python deye_storm.py --assume-storm 18   # pretend a storm is forecast in 18 h (testing, dry run only)
     python deye_storm.py --at '2026-10-08 00:05'   # pretend it is this time (testing, dry run only)
     python deye_storm.py --assume-outage     # pretend the grid is down (testing, dry run only)
@@ -344,6 +345,7 @@ class StormService:
             log(f"Current configuration saved to {PRE_STORM_PROFILE}")
         self.state.update(mode="storm", since=now.isoformat(), reason=reason,
                           storm_until=self.events[-1][0].isoformat(),
+                          target_storm=self.events[0][0].isoformat(),
                           charge_start=charge_start.isoformat(),
                           deferred=False, outage=False, clear_checks=0)
         self.persist()
@@ -357,52 +359,52 @@ class StormService:
             serial, full = read_registers(self.conf, self.regmap)
             if not self.apply_profile(previous, "pre-storm configuration", full):
                 return  # keep storm mode and try again next check
-        for key in ("since", "reason", "storm_until", "charge_start", "deferred", "outage", "clear_checks"):
+        for key in ("since", "reason", "storm_until", "target_storm", "charge_start", "deferred",
+                    "outage", "clear_checks"):
             self.state.pop(key, None)
         self.state["mode"] = "normal"
         self.persist()
         log("Storm mode finished.")
 
     # -- periodic checks
+    def in_planning_window(self, now: datetime) -> bool:
+        return self.s["planning_t"] <= now.time() < self.s["ready_by_t"]
+
     def forecast_check(self, plan_now: bool = False) -> None:
         s, now = self.s, self.now()
         self.events = find_storms(fetch_forecast(s), s, now)
-        if self.assume_storm:
+        if self.assume_storm is not None:
             simulated = now + timedelta(hours=self.assume_storm)
             self.events = sorted(self.events + [(simulated, "simulated storm (--assume-storm)")])
         r = read_live(self.conf)
         soc = r[REG_SOC]
-        today = now.date().isoformat()
-        planning_due = plan_now or (s["planning_t"] <= now.time() < s["ready_by_t"]
-                                    and self.state.get("last_planning") != today)
+        planning = plan_now or self.in_planning_window(now)
         storm_now = any(t <= now < t + timedelta(hours=1) for t, _ in self.events)
+        first = self.events[0][0] if self.events else None
         storm = self.state["mode"] == "storm"
 
         log(f"[{now:%Y-%m-%d %H:%M}] SOC {soc} % | grid {'OK' if r[REG_GRID_STATUS] == 1 else 'DOWN'} | "
             f"storm mode {'ACTIVE' if storm else 'inactive'} | next {s['forecast_hours']} h: "
-            + (f"{len(self.events)} storm hour(s), first at {self.events[0][0]:%d/%m %H:%M}"
-               if self.events else "no storms") + (" | planning" if planning_due else ""))
-        if planning_due:
-            self.state["last_planning"] = today
-            self.persist()
+            + (f"{len(self.events)} storm hour(s), first at {first:%d/%m %H:%M}" if self.events else "no storms")
+            + (" | planning window" if planning else ""))
 
         if not storm:
             if not self.events:
                 return
             if storm_now:
-                _, info = charge_plan(s, r, now, self.events[0][0])
+                _, info = charge_plan(s, r, now, first)
                 self.enter_storm("storm happening now", now, info.split(", ready by")[0] + ", starting now", now)
-            elif planning_due:
-                start, info = charge_plan(s, r, now, self.events[0][0])
-                self.enter_storm(f"storm forecast at {self.events[0][0]:%d/%m %H:%M}", start, info, now)
+            elif planning:
+                start, info = charge_plan(s, r, now, first)
+                self.enter_storm(f"storm forecast at {first:%d/%m %H:%M}", start, info, now)
             elif (s["backup_enabled"] and soc < s["backup_trigger_soc"]
-                  and self.events[0][0] - now <= timedelta(hours=s["backup_hours"])):
-                _, info = charge_plan(s, r, now, self.events[0][0])
+                  and first - now <= timedelta(hours=s["backup_hours"])):
+                _, info = charge_plan(s, r, now, first)
                 info = info.split(", ready by")[0] + ", starting now"
-                self.enter_storm(f"backup: storm at {self.events[0][0]:%H:%M} and SOC {soc} % "
+                self.enter_storm(f"backup: storm at {first:%H:%M} and SOC {soc} % "
                                  f"< {s['backup_trigger_soc']} %", now, info, now)
             else:
-                log("Storm forecast later; waiting for the next planning run.")
+                log("Storm forecast later; it will be planned in the next planning window.")
                 return
             self.grid_check(r)
             return
@@ -414,13 +416,17 @@ class StormService:
             if self.events[-1][0] > until:
                 until = self.events[-1][0]
                 self.state["storm_until"] = until.isoformat()
-            if planning_due:
-                start, info = charge_plan(s, r, now, self.events[0][0])
-                self.state.update(charge_start=start.isoformat(), deferred=False)
-                log(f"Replanning for the next storm: {info}.")
-            elif storm_now and dt(self.state["charge_start"], s["tz"]) > now:
-                self.state["charge_start"] = now.isoformat()
-                log("Storm arrived earlier than planned: charging now.")
+            target = self.state.get("target_storm")
+            charge_start = dt(self.state["charge_start"], s["tz"])
+            if storm_now:
+                if charge_start > now:
+                    self.state["charge_start"] = now.isoformat()
+                    log("Storm happening now: charging now.")
+            elif planning and first.isoformat() != target:
+                # The storm the charge was planned for has passed or changed: plan for the next one
+                start, info = charge_plan(s, r, now, first)
+                self.state.update(charge_start=start.isoformat(), target_storm=first.isoformat(), deferred=False)
+                log(f"Replanning for the storm at {first:%d/%m %H:%M}: {info}.")
         else:
             self.state["clear_checks"] = self.state.get("clear_checks", 0) + 1
         self.persist()
@@ -472,9 +478,11 @@ class StormService:
         next_forecast = 0.0
         while not stop.is_set():
             try:
-                planning_due = (s["planning_t"] <= self.now().time() < s["ready_by_t"]
-                                and self.state.get("last_planning") != self.now().date().isoformat())
-                if time.monotonic() >= next_forecast or planning_due:
+                now = self.now()
+                window_start = self.in_planning_window(now) and self.state.get("last_window") != now.date().isoformat()
+                if time.monotonic() >= next_forecast or window_start:
+                    if window_start:
+                        self.state["last_window"] = now.date().isoformat()  # first check of the window
                     self.forecast_check()
                     next_forecast = time.monotonic() + s["forecast_interval"]
                 else:
