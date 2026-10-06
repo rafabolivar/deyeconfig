@@ -43,10 +43,10 @@ Un perfil (`profiles/*.toml`) indica solo los parámetros que se quieren cambiar
 en unidades normales (A, %, V, "HH:MM", true/false). El resto no se toca.
 
 ```bash
-.venv/bin/python deye_apply.py profiles/invierno.toml             # muestra qué cambiaría
-.venv/bin/python deye_apply.py profiles/invierno.toml --show   # ídem, explícito
-.venv/bin/python deye_apply.py profiles/invierno.toml --apply   # escribe (pide confirmación)
-.venv/bin/python deye_apply.py profiles/invierno.toml --apply --yes   # sin confirmación (cron)
+.venv/bin/python deye_apply.py profiles/winter.toml             # muestra qué cambiaría
+.venv/bin/python deye_apply.py profiles/winter.toml --show   # ídem, explícito
+.venv/bin/python deye_apply.py profiles/winter.toml --apply   # escribe (pide confirmación)
+.venv/bin/python deye_apply.py profiles/winter.toml --apply --yes   # sin confirmación (cron)
 ```
 
 Sin `--apply` nunca se escribe nada. Con `--apply`:

@@ -18,8 +18,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from deye_comun import DEFAULT_CONFIG, cargar_config, conectar, leer_bloque, leer_serie_inversor
-from deye_mapa import cargar_mapa, formatear, formatear_carga_tou, hhmm
+from deye_common import DEFAULT_CONFIG, cargar_config, conectar, leer_bloque, leer_serie_inversor
+from deye_map import cargar_mapa, formatear, formatear_carga_tou, hhmm
 
 BACKUP_DIR = Path(__file__).with_name("backups")
 

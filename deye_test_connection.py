@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from deye_comun import DEFAULT_CONFIG, cargar_config, conectar, leer_serie_inversor
+from deye_common import DEFAULT_CONFIG, cargar_config, conectar, leer_serie_inversor
 
 
 def main():
