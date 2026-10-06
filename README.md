@@ -1,97 +1,106 @@
-# Deye Solarman Tool
+# deyeconfig
 
-Herramienta para leer (y más adelante modificar) parámetros de inversores Deye
-a través del datalogger Solarman en red local (Modbus TCP, puerto 8899), sin depender de la nube.
+Tool to read and change the configuration of Deye inverters through the Solarman
+data logger on the local network (Modbus TCP, port 8899), without relying on the cloud.
 
-## Instalación
+Typical use: switching between configuration profiles (e.g. winter / summer) to
+control battery charging from the grid, Time Of Use slots, SOC limits, etc.
+
+## Installation
+
+Requires Python 3.11 or later.
 
 ```bash
-git clone <url-del-repo>
-cd deye
+git clone https://github.com/rafabolivar/deyeconfig.git
+cd deyeconfig
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp config.example.toml config.toml
 ```
 
-Edita `config.toml` con la IP y el número de serie de tu logger.
+Edit `config.toml` with your logger's IP address and serial number.
 
-## Prueba de conexión
+## Connection test
 
 ```bash
 .venv/bin/python deye_test_connection.py
 ```
 
-Solo lee registros; no modifica nada en el inversor.
+Reads the inverter serial number, battery SOC and battery voltage. Read-only.
 
-Requiere Python 3.11 o superior.
-
-## Leer la configuración del inversor
+## Reading the inverter configuration
 
 ```bash
-.venv/bin/python deye_read_config.py          # muestra todo y guarda backup
-.venv/bin/python deye_read_config.py --raw    # añade el valor en bruto de cada registro
+.venv/bin/python deye_read_config.py          # show everything and save a backup
+.venv/bin/python deye_read_config.py --raw    # also show id, register and raw value
+.venv/bin/python deye_read_config.py --no-backup
 ```
 
-Muestra toda la configuración: batería, carga desde red y generador, modo de trabajo,
-protecciones de red, puerto GEN/SmartLoad y las 6 franjas Time Of Use. Guarda además
-una copia de seguridad en JSON con todos los registros en bruto en `backups/`
-(excluida del repositorio). Solo lee; no modifica nada.
+Shows the whole configuration: battery, grid and generator charging, work mode,
+grid protections, GEN port / SmartLoad and the 6 Time Of Use slots. It also saves
+a JSON backup with all raw registers in `backups/` (excluded from the repository).
+Read-only.
 
-## Aplicar un perfil de configuración
+## Applying a configuration profile
 
-Un perfil (`profiles/*.toml`) indica solo los parámetros que se quieren cambiar,
-en unidades normales (A, %, V, "HH:MM", true/false). El resto no se toca.
+A profile (`profiles/*.toml`) lists only the parameters to change, in normal units
+(A, %, V, "HH:MM", true/false). Everything else is left untouched.
 
 ```bash
-.venv/bin/python deye_apply.py profiles/winter.toml             # muestra qué cambiaría
-.venv/bin/python deye_apply.py profiles/winter.toml --show   # ídem, explícito
-.venv/bin/python deye_apply.py profiles/winter.toml --apply   # escribe (pide confirmación)
-.venv/bin/python deye_apply.py profiles/winter.toml --apply --yes   # sin confirmación (cron)
+.venv/bin/python deye_apply.py profiles/winter.toml                # show what would change
+.venv/bin/python deye_apply.py profiles/winter.toml --show         # same, explicitly
+.venv/bin/python deye_apply.py profiles/winter.toml --apply        # write (asks for confirmation)
+.venv/bin/python deye_apply.py profiles/winter.toml --apply --yes  # no confirmation (cron)
 ```
 
-Sin `--apply` nunca se escribe nada. Con `--apply`:
+Nothing is ever written without `--apply`. With `--apply`:
 
-1. Se valida el perfil completo (parámetros existentes, escribibles y en rango).
-   Ante cualquier error no se escribe nada.
-2. Se guarda una copia de seguridad de la configuración actual en `backups/`.
-3. Se escriben solo los registros que cambian y se verifican leyéndolos de nuevo.
+1. The whole profile is validated (parameters exist, are writable and in range).
+   If there is any error, nothing is written.
+2. A backup of the current configuration is saved in `backups/`.
+3. Only the registers that change are written, and they are read back to verify.
 
-Ejemplo de perfil:
+Example profile:
 
 ```toml
-descripcion = "Invierno: carga desde red en valle hasta el 80 %"
+description = "Winter: grid charging during off-peak hours up to 80 %"
 
-[parametros]
-carga_red = true
-corriente_carga_red = 40
+[parameters]
+grid_charge = true
+grid_charge_current = 40
 
 [[tou]]
-franja = 1
-hora = "00:00"
+slot = 1
+time = "00:00"
 soc = 80
-carga_red = true
+grid_charge = true
 ```
 
-- `[parametros]`: cualquier parámetro escribible del mapa, por su `id`.
-  Consulta los ids con `deye_read_config.py --raw`.
-- `[[tou]]`: franjas Time Of Use (1 a 6) con `hora`, `potencia`, `tension`, `soc`,
-  `carga_red` y `carga_gen`. Las horas de inicio deben ser crecientes.
+- `[parameters]`: any writable parameter of the map, by its `id`.
+  List the ids with `deye_read_config.py --raw`.
+- `[[tou]]`: Time Of Use slots (1 to 6) with `time`, `power`, `voltage`, `soc`,
+  `grid_charge` and `gen_charge`. Start times must be increasing.
 
-Por seguridad, algunos parámetros son de solo lectura (protecciones de red, tipo de
-batería, tensiones de carga...). Se controla con `escribible` en el mapa.
+For safety, some parameters are read-only (grid protections, battery type, charging
+voltages...). This is controlled by `writable` in the map.
 
-Los perfiles de `profiles/` son ejemplos: revísalos y ajústalos a tu instalación
-antes de aplicarlos.
+The profiles in `profiles/` are examples: review them and adjust them to your
+installation before applying them.
 
-## Mapas de registros
+## Register maps
 
-Los registros de cada modelo se definen en `maps/` (formato TOML), separados del código.
-El mapa se elige en `config.toml` (`[inversor] mapa = ...`). Para añadir parámetros
-o soportar otro modelo, basta con editar o crear un mapa.
+The registers of each model are defined in `maps/` (TOML format), separate from the
+code. The map is selected in `config.toml` (`[inverter] map = ...`). To add parameters
+or support another model, just edit or create a map.
 
-| Mapa | Modelos | Probado con |
+| Map | Models | Tested with |
 |---|---|---|
-| `deye_sg0xlp1.toml` | Deye híbrido monofásico BT (SG03LP1, SG04LP1, SG05LP1...) | SUN-6K-SG03LP1-EU |
+| `deye_sg0xlp1.toml` | Deye single-phase LV hybrid (SG03LP1, SG04LP1, SG05LP1...) | SUN-6K-SG03LP1-EU |
 
-Fuentes: protocolo Modbus Deye V118 y la definición `deye_hybrid.yaml` de
+Sources: Deye Modbus protocol V118 and the `deye_hybrid.yaml` definition from
 [ha-solarman](https://github.com/davidrapan/ha-solarman).
+
+## Disclaimer
+
+Writing wrong values to an inverter can affect its operation or the battery.
+Use at your own risk, always run without `--apply` first and check the changes.

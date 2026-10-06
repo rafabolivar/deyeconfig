@@ -1,58 +1,58 @@
-# Perfil de EJEMPLO: invierno / días de mal tiempo.
-# Carga la batería desde la red en horas valle (00:00-08:00) hasta el 80 %
-# y la reserva para las horas punta. Ajusta los valores a tu instalación.
+# EXAMPLE profile: winter / bad weather days.
+# Charges the battery from the grid during off-peak hours (00:00-08:00) up to 80 %
+# and keeps it for peak hours. Adjust the values to your installation.
 #
-# Solo se modifican los parámetros que aparecen aquí; el resto no se toca.
-# Ids disponibles: python deye_read_config.py --raw
+# Only the parameters listed here are changed; everything else is left untouched.
+# Available ids: python deye_read_config.py --raw
 #
-# Franjas alineadas con los periodos de la tarifa 2.0TD (días laborables):
-#   00-08 valle | 08-10 llano | 10-14 punta | 14-18 llano | 18-22 punta | 22-24 llano
+# Slots aligned with the Spanish 2.0TD tariff periods (weekdays):
+#   00-08 off-peak | 08-10 mid | 10-14 peak | 14-18 mid | 18-22 peak | 22-24 mid
 
-descripcion = "Invierno: carga desde red en valle hasta el 80 %"
+description = "Winter: grid charging during off-peak hours up to 80 %"
 
-[parametros]
-carga_red = true
-corriente_carga_red = 40
+[parameters]
+grid_charge = true
+grid_charge_current = 40
 time_of_use = true
 
 [[tou]]
-franja = 1
-hora = "00:00"
-potencia = 6000
+slot = 1
+time = "00:00"
+power = 6000
 soc = 80
-carga_red = true
+grid_charge = true
 
 [[tou]]
-franja = 2
-hora = "08:00"
-potencia = 6000
+slot = 2
+time = "08:00"
+power = 6000
 soc = 20
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 3
-hora = "10:00"
-potencia = 6000
+slot = 3
+time = "10:00"
+power = 6000
 soc = 20
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 4
-hora = "14:00"
-potencia = 6000
+slot = 4
+time = "14:00"
+power = 6000
 soc = 20
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 5
-hora = "18:00"
-potencia = 6000
+slot = 5
+time = "18:00"
+power = 6000
 soc = 20
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 6
-hora = "22:00"
-potencia = 6000
+slot = 6
+time = "22:00"
+power = 6000
 soc = 20
-carga_red = false
+grid_charge = false

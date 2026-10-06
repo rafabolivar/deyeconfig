@@ -1,45 +1,45 @@
-# Perfil de EJEMPLO: verano.
-# Sin carga desde la red: la batería se carga solo con el sol y puede
-# descargarse hasta el 15 % a cualquier hora. Ajusta los valores a tu instalación.
+# EXAMPLE profile: summer.
+# No grid charging: the battery charges from solar only and may discharge
+# down to 15 % at any time. Adjust the values to your installation.
 
-descripcion = "Verano: sin carga desde red, descarga hasta el 15 %"
+description = "Summer: no grid charging, discharge down to 15 %"
 
-[parametros]
-carga_red = false
+[parameters]
+grid_charge = false
 time_of_use = true
 
 [[tou]]
-franja = 1
-hora = "00:00"
+slot = 1
+time = "00:00"
 soc = 15
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 2
-hora = "08:00"
+slot = 2
+time = "08:00"
 soc = 15
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 3
-hora = "10:00"
+slot = 3
+time = "10:00"
 soc = 15
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 4
-hora = "14:00"
+slot = 4
+time = "14:00"
 soc = 15
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 5
-hora = "18:00"
+slot = 5
+time = "18:00"
 soc = 15
-carga_red = false
+grid_charge = false
 
 [[tou]]
-franja = 6
-hora = "22:00"
+slot = 6
+time = "22:00"
 soc = 15
-carga_red = false
+grid_charge = false

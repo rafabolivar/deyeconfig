@@ -1,10 +1,10 @@
-# Configuración local con datos de cada instalación
+# Local configuration with installation-specific data
 config.toml
 
-# Entorno virtual y caché de Python
+# Virtual environment and Python cache
 .venv/
 __pycache__/
 *.pyc
 
-# Copias de seguridad de la configuración del inversor
+# Inverter configuration backups
 backups/

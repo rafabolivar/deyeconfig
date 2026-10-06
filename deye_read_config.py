@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Lee toda la configuración de un inversor Deye a través del datalogger Solarman
-(Modbus TCP), usando un fichero de mapa de registros (carpeta maps/).
-Solo LEE registros. Guarda además una copia de seguridad en JSON con todos
-los registros en bruto del rango de configuración.
+Reads the full configuration of a Deye inverter through the Solarman data
+logger (Modbus TCP), using a register map file (maps/ folder).
+Only READS registers. Also saves a JSON backup with all raw registers of
+the configuration range.
 
-Uso:
-    python deye_read_config.py                  # muestra y guarda backup
+Usage:
+    python deye_read_config.py                  # show and save backup
     python deye_read_config.py --no-backup
-    python deye_read_config.py --raw            # añade id, registro y valor en bruto
-    python deye_read_config.py --config otro.toml
+    python deye_read_config.py --raw            # also show id, register and raw value
+    python deye_read_config.py --config other.toml
 """
 
 import argparse
@@ -18,78 +18,78 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from deye_common import DEFAULT_CONFIG, cargar_config, conectar, leer_bloque, leer_serie_inversor
-from deye_map import cargar_mapa, formatear, formatear_carga_tou, hhmm
+from deye_common import DEFAULT_CONFIG, connect, load_config, read_block, read_inverter_serial
+from deye_map import format_tou_charge, format_value, hhmm, load_map
 
 BACKUP_DIR = Path(__file__).with_name("backups")
 
 
-def leer_registros(conf: dict, mapa: dict) -> tuple[str, dict[int, int]]:
-    desde, hasta = mapa["info"]["rango_backup"]
-    inv = conectar(conf)
+def read_registers(conf: dict, regmap: dict) -> tuple[str, dict[int, int]]:
+    start, end = regmap["info"]["backup_range"]
+    inv = connect(conf)
     try:
-        return leer_serie_inversor(inv), leer_bloque(inv, desde, hasta - desde + 1)
+        return read_inverter_serial(inv), read_block(inv, start, end - start + 1)
     except Exception as e:
-        sys.exit(f"ERROR al leer registros: {e}")
+        sys.exit(f"ERROR reading registers: {e}")
     finally:
         inv.disconnect()
 
 
-def mostrar(mapa: dict, r: dict[int, int], raw: bool) -> None:
-    grupo_actual = None
-    ancho = max(len(p["nombre"]) for p in mapa["param"])
-    for p in mapa["param"]:
-        if p["grupo"] != grupo_actual:
-            grupo_actual = p["grupo"]
-            print(f"\n=== {grupo_actual} ===")
+def show(regmap: dict, r: dict[int, int], raw: bool) -> None:
+    group = None
+    width = max(len(p["name"]) for p in regmap["param"])
+    for p in regmap["param"]:
+        if p["group"] != group:
+            group = p["group"]
+            print(f"\n=== {group} ===")
         extra = ""
         if raw:
-            marca = "" if p.get("escribible") else " (solo lectura)"
-            extra = f"   [{p['id']}{marca} | reg {p['reg']} = {r[p['reg']]}]"
-        print(f"  {p['nombre']:<{ancho}} : {formatear(p, r)}{extra}")
+            ro = "" if p.get("writable") else " (read-only)"
+            extra = f"   [{p['id']}{ro} | reg {p['reg']} = {r[p['reg']]}]"
+        print(f"  {p['name']:<{width}} : {format_value(p, r)}{extra}")
 
-    t = mapa.get("tou")
+    t = regmap.get("tou")
     if t:
-        print("\n=== Franjas Time Of Use ===")
-        print("  Franja  Inicio  Potencia   Tensión  SOC   Carga")
-        for i in range(t["franjas"]):
-            print(f"   {i + 1}      {hhmm(r[t['hora'] + i])}   {r[t['potencia'] + i]:>5} W  "
-                  f"{r[t['tension'] + i] / 100:>6.2f} V  {r[t['soc'] + i]:>3} %   "
-                  f"{formatear_carga_tou(r[t['carga'] + i])}")
+        print("\n=== Time Of Use slots ===")
+        print("  Slot  Start   Power      Voltage   SOC   Charge")
+        for i in range(t["slots"]):
+            print(f"   {i + 1}    {hhmm(r[t['time'] + i])}   {r[t['power'] + i]:>5} W  "
+                  f"{r[t['voltage'] + i] / 100:>6.2f} V  {r[t['soc'] + i]:>3} %   "
+                  f"{format_tou_charge(r[t['charge'] + i])}")
 
 
-def guardar_backup(serie: str, mapa_ruta: Path, r: dict[int, int], motivo: str = "lectura") -> Path:
+def save_backup(serial: str, map_path: Path, r: dict[int, int], reason: str = "read") -> Path:
     BACKUP_DIR.mkdir(exist_ok=True)
-    ruta = BACKUP_DIR / f"config_{serie}_{datetime.now():%Y%m%d_%H%M%S}.json"
-    datos = {
-        "inversor": serie,
-        "fecha": datetime.now().isoformat(timespec="seconds"),
-        "motivo": motivo,
-        "mapa": mapa_ruta.name,
-        "registros": {str(k): v for k, v in sorted(r.items())},
+    path = BACKUP_DIR / f"config_{serial}_{datetime.now():%Y%m%d_%H%M%S}.json"
+    data = {
+        "inverter": serial,
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "reason": reason,
+        "map": map_path.name,
+        "registers": {str(k): v for k, v in sorted(r.items())},
     }
-    ruta.write_text(json.dumps(datos, indent=2))
-    return ruta
+    path.write_text(json.dumps(data, indent=2))
+    return path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Lee la configuración completa del inversor Deye")
+    parser = argparse.ArgumentParser(description="Read the full configuration of a Deye inverter")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
-                        help="Ruta al fichero de configuración (por defecto: config.toml)")
-    parser.add_argument("--no-backup", action="store_true", help="No guardar copia de seguridad JSON")
+                        help="Path to the configuration file (default: config.toml)")
+    parser.add_argument("--no-backup", action="store_true", help="Do not save a JSON backup")
     parser.add_argument("--raw", action="store_true",
-                        help="Mostrar id del parámetro, registro y valor en bruto")
+                        help="Also show parameter id, register number and raw value")
     args = parser.parse_args()
 
-    conf = cargar_config(args.config)
-    mapa_ruta, mapa = cargar_mapa(args.config)
-    serie, registros = leer_registros(conf, mapa)
+    conf = load_config(args.config)
+    map_path, regmap = load_map(args.config)
+    serial, registers = read_registers(conf, regmap)
 
-    print(f"Inversor {serie}  |  Mapa: {mapa['info']['modelo']}")
-    mostrar(mapa, registros, args.raw)
+    print(f"Inverter {serial}  |  Map: {regmap['info']['model']}")
+    show(regmap, registers, args.raw)
 
     if not args.no_backup:
-        print(f"\nCopia de seguridad guardada en: {guardar_backup(serie, mapa_ruta, registros)}")
+        print(f"\nBackup saved to: {save_backup(serial, map_path, registers)}")
 
 
 if __name__ == "__main__":

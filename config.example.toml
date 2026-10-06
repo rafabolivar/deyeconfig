@@ -1,29 +1,28 @@
-# Configuración de conexión con el inversor Deye a través del datalogger Solarman.
-# Copia este fichero como config.toml y rellena tus datos:
+# Connection settings for a Deye inverter through the Solarman data logger.
+# Copy this file to config.toml and fill in your values:
 #     cp config.example.toml config.toml
-# config.toml está en .gitignore y no se sube al repositorio.
+# config.toml is listed in .gitignore and is never committed.
 
 [logger]
-# IP del datalogger (stick WiFi/LAN) en tu red local.
-# Recomendado: fijarla con una reserva DHCP en el router.
+# IP address of the data logger (WiFi/LAN stick) on your local network.
+# Recommended: reserve it with a DHCP reservation on your router.
 ip = "192.168.1.100"
 
-# Número de serie del LOGGER (pegatina del stick o app Solarman),
-# no el del inversor. Es un número, sin comillas.
+# Serial number of the LOGGER (sticker on the stick or Solarman app),
+# not the inverter's. It is a number, without quotes.
 serial = 0
 
-# Puerto Modbus TCP del logger (normalmente 8899).
+# Modbus TCP port of the logger (usually 8899).
 port = 8899
 
 [modbus]
-# ID de esclavo Modbus del inversor (normalmente 1).
+# Modbus slave ID of the inverter (usually 1).
 slave_id = 1
 
-# Tiempo máximo de espera de la conexión, en segundos.
+# Connection timeout, in seconds.
 timeout = 10
 
-
-[inversor]
-# Mapa de registros del modelo de inversor (carpeta maps/).
-# Por defecto: Deye híbrido monofásico de baja tensión (SG0xLP1).
-mapa = "maps/deye_sg0xlp1.toml"
+[inverter]
+# Register map for the inverter model (maps/ folder).
+# Default: Deye single-phase low-voltage hybrid (SG0xLP1).
+map = "maps/deye_sg0xlp1.toml"
