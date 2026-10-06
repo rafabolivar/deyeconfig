@@ -37,6 +37,52 @@ protecciones de red, puerto GEN/SmartLoad y las 6 franjas Time Of Use. Guarda ad
 una copia de seguridad en JSON con todos los registros en bruto en `backups/`
 (excluida del repositorio). Solo lee; no modifica nada.
 
+## Aplicar un perfil de configuración
+
+Un perfil (`perfiles/*.toml`) indica solo los parámetros que se quieren cambiar,
+en unidades normales (A, %, V, "HH:MM", true/false). El resto no se toca.
+
+```bash
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml             # muestra qué cambiaría
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml --mostrar   # ídem, explícito
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml --aplicar   # escribe (pide confirmación)
+.venv/bin/python deye_aplicar.py perfiles/invierno.toml --aplicar --si   # sin confirmación (cron)
+```
+
+Sin `--aplicar` nunca se escribe nada. Con `--aplicar`:
+
+1. Se valida el perfil completo (parámetros existentes, escribibles y en rango).
+   Ante cualquier error no se escribe nada.
+2. Se guarda una copia de seguridad de la configuración actual en `backups/`.
+3. Se escriben solo los registros que cambian y se verifican leyéndolos de nuevo.
+
+Ejemplo de perfil:
+
+```toml
+descripcion = "Invierno: carga desde red en valle hasta el 80 %"
+
+[parametros]
+carga_red = true
+corriente_carga_red = 40
+
+[[tou]]
+franja = 1
+hora = "00:00"
+soc = 80
+carga_red = true
+```
+
+- `[parametros]`: cualquier parámetro escribible del mapa, por su `id`.
+  Consulta los ids con `deye_leer_config.py --raw`.
+- `[[tou]]`: franjas Time Of Use (1 a 6) con `hora`, `potencia`, `tension`, `soc`,
+  `carga_red` y `carga_gen`. Las horas de inicio deben ser crecientes.
+
+Por seguridad, algunos parámetros son de solo lectura (protecciones de red, tipo de
+batería, tensiones de carga...). Se controla con `escribible` en el mapa.
+
+Los perfiles de `perfiles/` son ejemplos: revísalos y ajústalos a tu instalación
+antes de aplicarlos.
+
 ## Mapas de registros
 
 Los registros de cada modelo se definen en `mapas/` (formato TOML), separados del código.
