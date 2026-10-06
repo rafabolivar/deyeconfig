@@ -18,6 +18,7 @@ Process:
 
 import argparse
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -124,24 +125,48 @@ def compute_changes(profile: dict, regmap: dict, r: dict[int, int]):
     return proposed, changes, errors, warnings
 
 
+WRITE_MAX_GAP = 8        # unchanged registers allowed inside one block write
+VERIFY_DELAY = 3         # seconds to wait before reading back (detects values reverted by the inverter)
+
+
+def write_blocks(proposed: dict[int, int], modified: list[int]) -> list[tuple[int, list[int]]]:
+    """Group modified registers into contiguous blocks (start, values). Small gaps of
+    unchanged registers are included with their current value, so related settings such
+    as the Time Of Use table are written in a single operation."""
+    blocks, run = [], []
+    for reg in modified:
+        if run and (reg - run[-1] > WRITE_MAX_GAP
+                    or any(g not in proposed for g in range(run[-1] + 1, reg))):
+            blocks.append(run)
+            run = []
+        run.append(reg)
+    if run:
+        blocks.append(run)
+    return [(b[0], [proposed[x] for x in range(b[0], b[-1] + 1)]) for b in blocks]
+
+
 def write(conf: dict, r: dict[int, int], proposed: dict[int, int]) -> list[str]:
-    """Write the modified registers and verify by reading them back. Returns failures."""
+    """Write the modified registers in contiguous blocks and verify by reading them back
+    after a short delay. Returns failures."""
     modified = sorted(reg for reg in proposed if proposed[reg] != r[reg])
     failures = []
-    inv = connect(conf)
+    blocks = write_blocks(proposed, modified)
+    inv = connect(conf, quiet=True)
     try:
-        for reg in modified:
+        for start, values in blocks:
             try:
-                inv.write_multiple_holding_registers(register_addr=reg, values=[proposed[reg]])
+                inv.write_multiple_holding_registers(register_addr=start, values=values)
             except Exception as e:
-                failures.append(f"register {reg}: write error ({e})")
-        for reg in modified:
-            read = inv.read_holding_registers(register_addr=reg, quantity=1)[0]
-            if read != proposed[reg]:
-                failures.append(f"register {reg}: wrote {proposed[reg]} but the inverter has {read}")
+                failures.append(f"registers {start}-{start + len(values) - 1}: write error ({e})")
+        time.sleep(VERIFY_DELAY)
+        for start, values in blocks:
+            read = inv.read_holding_registers(register_addr=start, quantity=len(values))
+            for k, (want, got) in enumerate(zip(values, read)):
+                if want != got:
+                    failures.append(f"register {start + k}: wrote {want} but the inverter has {got}")
     finally:
         inv.disconnect()
-    print(f"Registers written: {len(modified)}")
+    print(f"Registers written: {len(modified)} in {len(blocks)} block(s)")
     return failures
 
 

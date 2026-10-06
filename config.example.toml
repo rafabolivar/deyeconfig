@@ -28,40 +28,47 @@ timeout = 10
 map = "maps/deye_sg0xlp1.toml"
 
 [storm]
-# Storm mode service (deye_storm.py): pre-charges the battery from the grid when
-# thunderstorms or very heavy rain are forecast (Open-Meteo forecast).
+# Storm mode service (deye_storm.py): when thunderstorms or very heavy rain are
+# forecast (Open-Meteo), keeps the battery charged for a possible power outage,
+# charging from the grid in the cheapest tariff periods (see [tariff]).
 
 # Location for the weather forecast (decimal degrees) and its time zone.
 latitude = 0.0
 longitude = 0.0
 timezone = "Europe/Madrid"
 
-# Seconds between weather forecast checks.
+# Seconds between weather forecast checks (also checked at every tariff period change).
 forecast_interval = 900
 # Seconds between grid / battery checks while in storm mode (outage detection).
 grid_check_interval = 60
 
-# Planning window from planning_time to ready_by (off-peak period): on every
-# forecast check, look forecast_hours ahead. If a storm is forecast, charge from
-# the grid up to target_soc, finishing at ready_by, or storm_margin_minutes
-# before the storm if it comes earlier.
-planning_time = "00:00"
+# Hours ahead to look for storms. In an off-peak period, a storm within this
+# window starts storm mode.
 forecast_hours = 24
-ready_by = "07:30"
-storm_margin_minutes = 30
-target_soc = 80
 
-# Battery level allowed while the grid is down in storm mode (%).
+# Battery levels in storm mode (%):
+#   charge_soc  grid charge up to this level in off-peak periods
+#   hold_soc    minimum level kept until the storm has passed; mid periods only
+#               charge up to here, peak periods never charge
+#   outage_soc  level allowed while the grid is down
+charge_soc = 100
+hold_soc = 80
 outage_soc = 15
-# After an outage, recharge to target_soc as soon as the grid returns
-# (false = wait for the next planning run).
-recharge_after_outage = true
 
-# Backup outside planning: if a storm is forecast within backup_hours and the
-# SOC is below backup_trigger_soc, charge immediately.
+# Backup, mid periods: if a storm is forecast, the SOC is below backup_trigger_soc
+# and there is no other cheap period (off-peak or mid) before the storm,
+# start storm mode now.
 backup_enabled = true
-backup_hours = 4
 backup_trigger_soc = 50
+
+# Emergency, peak periods: if a storm is happening or due within emergency_hours
+# and the SOC is below emergency_soc, charge up to emergency_soc.
+emergency_soc = 50
+emergency_hours = 2
+
+# Maximum power drawn from the grid in storm mode (W), using the inverter's grid
+# peak shaving, to stay below the contracted power. 0 = do not change it.
+grid_power_limit = 4000
 
 # What counts as a storm: weather codes (WMO 95, 96, 99 = thunderstorm) and
 # heavy rain in mm/h with a minimum probability (%).
@@ -74,9 +81,25 @@ min_probability = 50
 grace_hours = 1
 max_hours = 36
 
-# Used to estimate the charging time.
-battery_nominal_voltage = 51.2
-charge_efficiency = 0.9
-
 # Safety limit of inverter writes per day.
 max_writes_per_day = 20
+
+[tariff]
+# Electricity tariff periods, used by storm mode to charge in the cheapest hours.
+# Default: Spanish 2.0TD (valle = off-peak, llano = mid, punta = peak).
+# Weekday periods: ["HH:MM" start, "off-peak" | "mid" | "peak"], first at 00:00,
+# at most 6 (one per Time Of Use slot).
+periods = [
+  ["00:00", "off-peak"],
+  ["08:00", "mid"],
+  ["10:00", "peak"],
+  ["14:00", "mid"],
+  ["18:00", "peak"],
+  ["22:00", "mid"],
+]
+# Saturdays and Sundays are off-peak all day.
+weekend_off_peak = true
+# Holidays, off-peak all day: "MM-DD" (every year) or "YYYY-MM-DD".
+# Default: Spanish national holidays with a fixed date (regional and local
+# holidays do not count in 2.0TD).
+holidays = ["01-01", "01-06", "05-01", "08-15", "10-12", "11-01", "12-06", "12-08", "12-25"]

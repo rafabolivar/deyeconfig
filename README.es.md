@@ -37,9 +37,9 @@ previsión de tormentas, para que la casa esté preparada ante un corte de luz.
   en unidades normales. Cada escritura se valida, se respalda y se verifica.
 - **Exportación**: vuelca la configuración actual como perfil para guardarla o
   volver a ella.
-- **Servicio de modo tormenta**: planifica una carga desde red en horas valle cuando
-  hay previsión de tormentas, mantiene la batería cargada durante la tormenta y deja
-  disponible toda la batería durante un corte.
+- **Servicio de modo tormenta**: cuando hay previsión de tormentas, carga la batería
+  desde la red en los periodos más baratos de la tarifa, mantiene una reserva durante
+  la tormenta y deja disponible toda la batería durante un corte.
 - **Seguro por defecto**: no se escribe nada sin `--apply`, los parámetros críticos
   son de solo lectura, y antes de cada escritura se hace una copia de seguridad y
   después se vuelve a leer para verificar.
@@ -90,6 +90,7 @@ deye_export.py            Exporta la configuración actual como perfil (solo lec
 deye_storm.py             Modo tormenta (comprobación única o servicio)
 deye_common.py            Común: carga de configuración, conexión, lectura de registros
 deye_map.py               Común: gestión del mapa de registros y conversión de valores
+deye_tariff.py            Común: periodos de la tarifa (valle, llano, punta), fines de semana y festivos
 maps/                     Mapas de registros por modelo de inversor (TOML)
 profiles/examples/        Perfiles de ejemplo (winter, summer)
 profiles/                 Tus perfiles (ignorados por git)
@@ -141,7 +142,9 @@ Sin `--apply` nunca se escribe nada. Con `--apply`:
    en rango, que las horas sean válidas y que las horas de inicio de las franjas sean
    crecientes. Ante cualquier error no se escribe nada.
 2. Se guarda una copia de seguridad de la configuración actual en `backups/`.
-3. Se escriben solo los registros que cambian y se vuelven a leer para verificarlos.
+3. Se escriben solo los registros que cambian, en bloques contiguos (la tabla Time
+   Of Use en una sola operación), y se vuelven a leer unos segundos después para
+   verificarlos.
 
 ### Formato de un perfil
 
@@ -210,75 +213,91 @@ Buena práctica: exporta tu configuración antes de experimentar
 
 ## Modo tormenta
 
-`deye_storm.py` precarga la batería desde la red cuando hay previsión de tormentas o
-lluvia muy intensa ([Open-Meteo](https://open-meteo.com/), gratuito, sin clave de
-API), para que la casa esté preparada ante un posible corte de luz. Funciona como
-servicio.
+`deye_storm.py` es un servicio que mantiene la batería cargada cuando hay previsión
+de tormentas o lluvia muy intensa ([Open-Meteo](https://open-meteo.com/), gratuito,
+sin clave de API), para que la casa esté preparada ante un posible corte de luz.
+Carga desde la red en los periodos más baratos de la tarifa y nunca en punta,
+salvo en caso de emergencia.
 
-### Cómo funciona
+Fuera del modo tormenta, el servicio solo consulta la previsión y nunca toca el
+inversor. Todos los valores se configuran en las secciones `[storm]` y `[tariff]`
+de `config.toml` (valores por defecto entre paréntesis).
 
-Todos los valores se configuran en la sección `[storm]` de `config.toml` (valores
-por defecto entre paréntesis).
+### Cuándo se activa el modo tormenta
 
-1. **Ventana de planificación** (de `planning_time` a `ready_by`, 00:00-07:30, el
-   periodo valle): en cada comprobación de la previsión, si hay tormenta prevista en
-   las próximas `forecast_hours` (24), calcula cuánto se tarda en cargar desde el SOC
-   actual hasta `target_soc` (80 %) y programa la carga desde red para terminar a
-   `ready_by`, o `storm_margin_minutes` (30) antes de la tormenta si esta llega antes.
-   Si no hay tiempo suficiente, carga inmediatamente.
-2. **Tormenta en curso** (la previsión para la hora actual cumple el criterio):
-   carga inmediatamente mientras haya red.
-3. **Respaldo** fuera de la ventana de planificación: si hay tormenta prevista en las
-   próximas `backup_hours` (4) y el SOC está por debajo de `backup_trigger_soc`
-   (50 %), carga inmediatamente.
-4. **Mantenimiento**: en modo tormenta, `target_soc` se mantiene como nivel mínimo
-   de la batería.
-5. **Siguiente tormenta**: si pasa la tormenta para la que se planificó la carga y hay
-   otra prevista, deja de cargar y planifica la carga para la siguiente. El plan solo
-   se recalcula cuando cambia la tormenta objetivo, así la carga no se enciende y
-   apaga a medida que sube el SOC.
-6. **Protección por corte**: en modo tormenta se comprueba el estado de la red cada
-   `grid_check_interval` segundos (60). Si se va la red, todas las franjas Time Of
-   Use bajan a `outage_soc` (15 %) para que toda la batería esté disponible, haga lo
-   que haga el inversor con las franjas en modo isla. Cuando vuelve la red, la
-   batería se recarga hasta `target_soc` (`recharge_after_outage`).
-7. **Fin**: `grace_hours` (1) después de la última hora de tormenta prevista, si la
-   tormenta deja de estar prevista (dos comprobaciones seguidas), o tras `max_hours`
-   (36) como límite de seguridad, se restaura la configuración guardada al entrar en
-   modo tormenta.
+1. **Periodo valle**: hay tormenta prevista en las próximas `forecast_hours` (24).
+   Es el caso principal: la batería se carga a precio valle, aunque la tormenta se
+   espere por la tarde.
+2. **Tormenta en curso** (la previsión para la hora actual cumple el criterio), a
+   cualquier hora.
+3. **Respaldo**, periodo llano: hay tormenta prevista, el SOC está por debajo de
+   `backup_trigger_soc` (50 %) y es el último periodo barato (valle o llano) antes
+   de la tormenta. Ejemplo: tormenta a las 21:00 en un día laborable; el modo
+   tormenta empieza a las 14:00 para aprovechar todo el llano de 14 a 18 antes de
+   la punta de 18 a 22.
+4. **Emergencia**, periodo punta: hay tormenta en curso o a menos de
+   `emergency_hours` (2) horas y el SOC está por debajo de `emergency_soc` (50 %).
+
+### Distribución de las franjas Time Of Use en modo tormenta
+
+Las 6 franjas Time Of Use siguen los periodos de la tarifa. Con la tarifa 2.0TD
+por defecto, en un día laborable:
+
+| Franja | Inicio | Periodo | SOC | Carga desde red | Efecto |
+|---|---|---|---|---|---|
+| 1 | 00:00 | Valle | 100 % | Sí | Carga al máximo con la energía más barata |
+| 2 | 08:00 | Llano | 80 % | Sí | Solo carga si la batería baja del 80 % |
+| 3 | 10:00 | Punta | 80 % | No | No carga nunca; la batería no baja del 80 % |
+| 4 | 14:00 | Llano | 80 % | Sí | Solo carga si baja del 80 % |
+| 5 | 18:00 | Punta | 80 % | No | No carga; mantiene la reserva |
+| 6 | 22:00 | Llano | 80 % | Sí | Solo carga si baja del 80 % |
+
+- `charge_soc` (100 %): nivel de carga en los periodos valle.
+- `hold_soc` (80 %): reserva que se mantiene hasta que pasa la tormenta. La batería
+  se puede usar del 100 % al 80 % por la mañana y en las horas punta, cuando la
+  energía de la red es más cara, mientras la reserva para el corte queda intacta.
+- **Fines de semana y festivos** son valle todo el día: todas las franjas cargan
+  hasta el 100 %. El inversor usa la misma tabla todos los días, así que el
+  servicio la reescribe cuando cambia el tipo de día (solo en modo tormenta).
+- **Carga de emergencia** en punta: las franjas de punta cargan hasta
+  `emergency_soc` (50 %) hasta que termina ese periodo punta. El resto se completa
+  en el siguiente llano o valle.
+- **Límite de potencia de red**: el *peak shaving* de red del inversor se fija en
+  `grid_power_limit` (4000 W) para que la carga de la batería y el consumo de la
+  casa juntos nunca superen la potencia contratada; el inversor recorta primero la
+  carga de la batería.
+- **Protección por corte**: el estado de la red se comprueba cada
+  `grid_check_interval` segundos (60). Si se va la red, todas las franjas bajan a
+  `outage_soc` (15 %) para que toda la batería esté disponible, haga lo que haga el
+  inversor con las franjas en modo isla. Cuando vuelve la red, se recupera la
+  distribución anterior.
+
+### Cuándo termina el modo tormenta
+
+Se restaura la configuración guardada al entrar en modo tormenta
+(`state/pre_storm.toml`):
+
+- `grace_hours` (1) después de la última hora de tormenta prevista, si no hay más
+  tormentas previstas;
+- si la tormenta deja de estar prevista (dos comprobaciones seguidas);
+- fuera de un periodo valle, si la siguiente tormenta llega después del siguiente
+  periodo valle (se gestionará entonces, cargando a precio valle);
+- tras `max_hours` (36), como límite de seguridad.
 
 Qué cuenta como tormenta: los códigos meteorológicos de `storm_codes` (WMO 95, 96 y
 99 = tormenta) o lluvia de al menos `heavy_rain_mm` (10 mm/h) con una probabilidad
 de al menos `min_probability` (50 %).
 
-El tiempo de carga se estima a partir de la capacidad de la batería (leída del
-inversor), `battery_nominal_voltage`, la corriente de carga desde red configurada en
-el inversor, la tensión de la batería y `charge_efficiency`. Si la estimación se
-queda corta, la carga simplemente continúa un poco después de `ready_by` (el periodo
-valle dura hasta las 08:00).
-
-### Distribución de las franjas Time Of Use
-
-El servicio calcula él mismo las franjas Time Of Use. Ejemplo: batería al 15 %,
-tormenta prevista a las 18:00, planificación a las 00:05:
-
-| Franja | Inicio | SOC | Carga desde red | Para qué |
-|---|---|---|---|---|
-| 1 | 00:00 | 15 % | No | Uso normal hasta que empieza la carga |
-| 2 | 03:55 | 80 % | Sí | Cargar al 80 % antes de las 07:30 |
-| 3-6 | 08:00, 12:00, 16:00, 20:00 | 80 % | Sí | Mantener el 80 % hasta que pase la tormenta |
-
-La franja 1 usa el SOC mínimo de tu configuración normal. Una vez empezada la carga,
-todas las franjas pasan al 80 % con carga desde red.
-
 ### Escrituras en el inversor
 
 En cada comprobación, el servicio compara la configuración deseada con la del
 inversor y solo escribe cuando hay que cambiar algo (normalmente al entrar en modo
-tormenta, al irse y volver la red y al terminar). Antes de cada escritura se guarda
-una copia en `backups/`, después se verifica, y hay un límite diario
-(`max_writes_per_day`, 20). Si el inversor cambia un valor por su cuenta, la
-siguiente comprobación lo corrige.
+tormenta, en los cambios de periodo que lo requieran, al irse y volver la red y al
+terminar). Los registros se escriben en bloques contiguos (toda la tabla Time Of
+Use en una sola operación) y se vuelven a leer unos segundos después para
+verificarlos. Antes de cada escritura se guarda una copia en `backups/`, y hay un
+límite diario (`max_writes_per_day`, 20). Si el inversor cambia un valor por su
+cuenta, la siguiente comprobación lo corrige.
 
 ### Ejecución
 
@@ -286,15 +305,14 @@ siguiente comprobación lo corrige.
 .venv/bin/python deye_storm.py                    # comprobación única, muestra qué haría
 .venv/bin/python deye_storm.py --apply            # comprobación única, actúa sobre el inversor
 .venv/bin/python deye_storm.py --daemon --apply   # como servicio (lo usa systemd)
-.venv/bin/python deye_storm.py --plan-now         # ejecuta la planificación ahora
 ```
 
 Opciones de prueba (solo en una simulación única; no se escribe ni se guarda nada):
 
 ```bash
-.venv/bin/python deye_storm.py --assume-storm 18                          # simula una tormenta dentro de 18 h
-.venv/bin/python deye_storm.py --assume-outage                            # simula que no hay red
-.venv/bin/python deye_storm.py --at '2026-10-08 00:05' --assume-storm 18  # simula que son las 00:05
+.venv/bin/python deye_storm.py --assume-storm 6                           # simula una tormenta dentro de 6 h
+.venv/bin/python deye_storm.py --assume-outage --assume-storm 0           # tormenta en curso y sin red
+.venv/bin/python deye_storm.py --at '2026-10-07 14:30' --assume-storm 6.5 # simula que son las 14:30
 ```
 
 ### Instalar el servicio
@@ -312,7 +330,7 @@ Comandos útiles:
 ```bash
 systemctl status deye-storm.service                     # ¿está funcionando?
 journalctl -u deye-storm.service -f                     # sigue el registro en directo (Ctrl+C para salir)
-journalctl -u deye-storm.service --since "today 00:00"  # qué ha hecho esta noche
+journalctl -u deye-storm.service --since today          # qué ha hecho hoy
 sudo systemctl restart deye-storm.service               # tras cambiar config.toml o el código
 sudo systemctl stop deye-storm.service                  # lo detiene (el estado se conserva)
 ```
@@ -356,34 +374,44 @@ salida de respaldo del inversor o a un SAI). El logger se alimenta del propio in
 |---|---|---|
 | `latitude`, `longitude` | | Ubicación para la previsión (grados decimales) |
 | `timezone` | `Europe/Madrid` | Zona horaria local |
-| `forecast_interval` | 900 | Segundos entre comprobaciones de la previsión |
+| `forecast_interval` | 900 | Segundos entre comprobaciones de la previsión (también en cada cambio de periodo) |
 | `grid_check_interval` | 60 | Segundos entre comprobaciones de la red en modo tormenta |
-| `planning_time` | `"00:00"` | Inicio de la ventana de planificación (inicio del valle) |
-| `ready_by` | `"07:30"` | Fin de la ventana de planificación; la carga debe terminar antes |
 | `forecast_hours` | 24 | Horas por delante en las que buscar tormentas |
-| `storm_margin_minutes` | 30 | Terminar la carga este tiempo antes de la tormenta, si llega antes de `ready_by` |
-| `target_soc` | 80 | SOC al que cargar y que mantener en modo tormenta (%) |
+| `charge_soc` | 100 | Nivel de carga desde red en los periodos valle (%) |
+| `hold_soc` | 80 | Reserva que se mantiene en modo tormenta; en llano solo se carga hasta aquí (%) |
 | `outage_soc` | 15 | SOC mínimo mientras no hay red en modo tormenta (%) |
-| `recharge_after_outage` | true | Recargar en cuanto vuelve la red (false: esperar a la siguiente ventana de planificación) |
-| `backup_enabled` | true | Activa el respaldo fuera de la ventana de planificación |
-| `backup_hours` | 4 | Respaldo: tormenta dentro de este número de horas |
+| `backup_enabled` | true | Activa el respaldo en los periodos llano |
 | `backup_trigger_soc` | 50 | Respaldo: SOC por debajo de este valor (%) |
+| `emergency_soc` | 50 | Emergencia en punta: SOC por debajo de este valor; carga hasta él (%) |
+| `emergency_hours` | 2 | Emergencia: tormenta en curso o a menos de estas horas |
+| `grid_power_limit` | 4000 | Consumo máximo de red en modo tormenta (W, *peak shaving* del inversor); 0 = no cambiarlo |
 | `storm_codes` | [95, 96, 99] | Códigos meteorológicos WMO considerados tormenta |
 | `heavy_rain_mm` | 10.0 | Lluvia considerada muy intensa (mm/h) |
 | `min_probability` | 50 | Probabilidad mínima para que cuente la lluvia intensa (%) |
 | `grace_hours` | 1 | Restaurar este número de horas después de la última hora de tormenta |
 | `max_hours` | 36 | Límite de seguridad: horas máximas en modo tormenta |
-| `battery_nominal_voltage` | 51.2 | Se usa para estimar el tiempo de carga |
-| `charge_efficiency` | 0.9 | Se usa para estimar el tiempo de carga |
 | `max_writes_per_day` | 20 | Límite de seguridad de escrituras en el inversor por día |
+
+### `[tariff]`
+
+| Clave | Por defecto | Descripción |
+|---|---|---|
+| `periods` | 2.0TD | Periodos de los días laborables: `["HH:MM", "off-peak" \| "mid" \| "peak"]`, el primero a las 00:00, como máximo 6 |
+| `weekend_off_peak` | true | Sábados y domingos son valle todo el día |
+| `holidays` | Festivos nacionales de fecha fija | Días valle: `"MM-DD"` (todos los años) o `"YYYY-MM-DD"` |
+
+Periodos 2.0TD por defecto en días laborables: 00-08 valle (`off-peak`), 08-10
+llano (`mid`), 10-14 punta (`peak`), 14-18 llano, 18-22 punta, 22-24 llano. En la
+2.0TD solo cuentan como valle los festivos nacionales, no los autonómicos ni los
+locales.
 
 ## Copias de seguridad, estado y cómo volver atrás
 
 - **`backups/`**: ficheros JSON con todos los registros de configuración en bruto,
   creados por `deye_read_config.py` y antes de cada escritura de `deye_apply.py` y
   `deye_storm.py`. Cada fichero indica la fecha y el motivo.
-- **`state/storm.json`**: estado del modo tormenta (activo o no, carga planificada,
-  tormenta objetivo, corte, número de escrituras del día).
+- **`state/storm.json`**: estado del modo tormenta (activo o no, fin de la tormenta,
+  carga de emergencia, corte, número de escrituras del día).
 - **`state/pre_storm.toml`**: perfil con la configuración guardada al entrar en modo
   tormenta; se restaura al terminar.
 

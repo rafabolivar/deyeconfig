@@ -1,37 +1,36 @@
 #!/usr/bin/env python3
 """
-Storm mode service: pre-charges the battery from the grid when thunderstorms or
-very heavy rain are forecast, so the house is ready for a possible power outage.
+Storm mode service: when thunderstorms or very heavy rain are forecast, keeps
+the battery charged so the house is ready for a possible power outage,
+charging from the grid in the cheapest tariff periods.
 
-Strategy (all values configurable in the [storm] section of config.toml):
+Settings: [storm] and [tariff] sections of config.toml.
 
-  1. Planning window from 'planning_time' to 'ready_by' (default 00:00-07:30,
-     off-peak period), on every forecast check:
-     if a storm is forecast within the next 'forecast_hours', plan a grid charge
-     from the current SOC up to 'target_soc', finishing at 'ready_by' (07:30) or
-     'storm_margin_minutes' before the storm, whichever comes first.
-  2. Storm already happening (forecast for the current hour meets the criteria):
-     charge immediately while the grid is available.
-  3. Backup outside planning: if a storm is forecast within 'backup_hours' and
-     the SOC is below 'backup_trigger_soc', charge immediately.
-  4. While in storm mode, 'target_soc' is kept as the minimum battery level.
-  5. If the grid goes down in storm mode, all Time Of Use slots are lowered to
-     'outage_soc' so the whole battery is available. When the grid returns, the
-     battery is recharged ('recharge_after_outage').
-  6. 'grace_hours' after the last forecast storm hour (or if the storm is no
-     longer forecast, or after 'max_hours'), the previous configuration is restored.
+When storm mode starts (forecast from Open-Meteo):
+  - Off-peak period and a storm forecast within 'forecast_hours'.
+  - A storm happening now (forecast for the current hour meets the criteria).
+  - Backup, mid period: storm forecast, SOC below 'backup_trigger_soc' and this is
+    the last cheap period (off-peak or mid) before the storm.
+  - Emergency, peak period: storm now or within 'emergency_hours' and SOC below
+    'emergency_soc'.
 
-The inverter is only written when its configuration has to change, with a
-daily limit ('max_writes_per_day').
+In storm mode the Time Of Use slots follow the tariff periods:
+  off-peak  grid charge up to 'charge_soc' (100 %)
+  mid       grid charge only up to 'hold_soc' (80 %)
+  peak      no grid charge, battery kept at 'hold_soc' (emergency: charge up to 'emergency_soc')
+Grid draw is limited to 'grid_power_limit' (inverter peak shaving).
+If the grid goes down, all slots are lowered to 'outage_soc' so the whole battery
+is available. Storm mode ends 'grace_hours' after the last storm hour, when the
+storm is no longer forecast, when the next storm comes after the next off-peak
+period, or after 'max_hours'; the previous configuration is then restored.
 
 Usage:
-    python deye_storm.py                     # single check, show what it would do
-    python deye_storm.py --apply             # single check, act on the inverter
-    python deye_storm.py --daemon --apply    # run as a service
-    python deye_storm.py --plan-now          # run the planning logic now, as if in the planning window
-    python deye_storm.py --assume-storm 18   # pretend a storm is forecast in 18 h (testing, dry run only)
-    python deye_storm.py --at '2026-10-08 00:05'   # pretend it is this time (testing, dry run only)
-    python deye_storm.py --assume-outage     # pretend the grid is down (testing, dry run only)
+    python deye_storm.py                       # single check, show what it would do
+    python deye_storm.py --apply               # single check, act on the inverter
+    python deye_storm.py --daemon --apply      # run as a service
+    python deye_storm.py --assume-storm 18     # pretend a storm in 18 h (testing, dry run only)
+    python deye_storm.py --assume-outage       # pretend the grid is down (testing, dry run only)
+    python deye_storm.py --at '2026-10-08 15:00'   # pretend it is this time (testing, dry run only)
 """
 
 import argparse
@@ -44,16 +43,16 @@ import time
 import tomllib
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta
-from datetime import time as dtime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from deye_apply import compute_changes, write
 from deye_common import DEFAULT_CONFIG, connect, load_config, read_block
 from deye_export import build_profile
-from deye_map import hhmm, load_map
+from deye_map import load_map
 from deye_read_config import read_registers, save_backup
+from deye_tariff import Tariff
 
 BASE = Path(__file__).parent
 STATE_DIR = BASE / "state"
@@ -62,34 +61,29 @@ PRE_STORM_PROFILE = STATE_DIR / "pre_storm.toml"
 FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 
 # Live data registers (Deye single-phase LV hybrid)
-REG_BATTERY_VOLTAGE = 183   # x0.01 V
-REG_SOC = 184               # %
-REG_GRID_STATUS = 194       # 1 = grid connected
-REG_BATTERY_CAPACITY = 204  # Ah
-REG_MAX_CHARGE_CURRENT = 210
-REG_GRID_CHARGE_CURRENT = 230
+REG_SOC = 184             # %
+REG_GRID_STATUS = 194     # 1 = grid connected
+
+STATE_KEYS = ("since", "reason", "storm_until", "emergency", "emergency_period", "outage", "clear_checks")
 
 DEFAULTS = {
     "timezone": "Europe/Madrid",
     "forecast_interval": 900,
     "grid_check_interval": 60,
     "forecast_hours": 24,
-    "planning_time": "00:00",
-    "ready_by": "07:30",
-    "storm_margin_minutes": 30,
-    "target_soc": 80,
+    "charge_soc": 100,
+    "hold_soc": 80,
     "outage_soc": 15,
-    "battery_nominal_voltage": 51.2,
-    "charge_efficiency": 0.9,
+    "backup_enabled": True,
+    "backup_trigger_soc": 50,
+    "emergency_soc": 50,
+    "emergency_hours": 2,
+    "grid_power_limit": 4000,
     "storm_codes": [95, 96, 99],
     "heavy_rain_mm": 10.0,
     "min_probability": 50,
     "grace_hours": 1,
     "max_hours": 36,
-    "backup_enabled": True,
-    "backup_hours": 4,
-    "backup_trigger_soc": 50,
-    "recharge_after_outage": True,
     "max_writes_per_day": 20,
 }
 
@@ -100,37 +94,29 @@ def log(msg: str = "") -> None:
 
 # ------------------------------------------------------------------ settings and state
 
-def parse_hhmm(value: str, name: str, errors: list) -> dtime | None:
-    try:
-        h, m = (int(x) for x in str(value).split(":"))
-        return dtime(h, m)
-    except ValueError:
-        errors.append(f"[storm] {name} must be a time like 'HH:MM' (got {value!r})")
-        return None
-
-
-def load_storm_settings(config_path: Path) -> dict:
+def load_settings(config_path: Path) -> tuple[dict, Tariff]:
     with config_path.open("rb") as f:
-        s = {**DEFAULTS, **tomllib.load(f).get("storm", {})}
+        cfg = tomllib.load(f)
+    s = {**DEFAULTS, **cfg.get("storm", {})}
     errors = [f"missing [storm] {k}" for k in ("latitude", "longitude")
               if not isinstance(s.get(k), (int, float))]
     try:
         s["tz"] = ZoneInfo(s["timezone"])
     except (ZoneInfoNotFoundError, ValueError):
         errors.append(f"[storm] unknown timezone {s['timezone']!r}")
-    s["planning_t"] = parse_hhmm(s["planning_time"], "planning_time", errors)
-    s["ready_by_t"] = parse_hhmm(s["ready_by"], "ready_by", errors)
     for key, minimum in (("forecast_interval", 60), ("grid_check_interval", 10)):
         if not isinstance(s[key], int) or s[key] < minimum:
             errors.append(f"[storm] {key} must be a number of seconds, at least {minimum}")
-    for key in ("target_soc", "outage_soc", "backup_trigger_soc"):
+    for key in ("charge_soc", "hold_soc", "outage_soc", "backup_trigger_soc", "emergency_soc"):
         if not isinstance(s[key], int) or not 5 <= s[key] <= 100:
             errors.append(f"[storm] {key} must be a percentage between 5 and 100")
-    if not 0.5 <= s["charge_efficiency"] <= 1:
-        errors.append("[storm] charge_efficiency must be between 0.5 and 1")
+    if not errors and not s["outage_soc"] <= s["hold_soc"] <= s["charge_soc"]:
+        errors.append("[storm] requires outage_soc <= hold_soc <= charge_soc")
+    if not isinstance(s["grid_power_limit"], int) or not 0 <= s["grid_power_limit"] <= 8000:
+        errors.append("[storm] grid_power_limit must be between 0 (disabled) and 8000 W")
     if errors:
         sys.exit("ERROR in configuration:\n  - " + "\n  - ".join(errors))
-    return s
+    return s, Tariff(cfg.get("tariff", {}), s["tz"])
 
 
 def load_state() -> dict:
@@ -142,10 +128,6 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     STATE_DIR.mkdir(exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2))
-
-
-def dt(value: str, tz) -> datetime:
-    return datetime.fromisoformat(value).astimezone(tz)
 
 
 # ------------------------------------------------------------------ forecast
@@ -193,90 +175,22 @@ def read_live(conf: dict) -> dict[int, int]:
     """Read the live data and configuration registers needed by the service."""
     inv = connect(conf, quiet=True)
     try:
-        r = read_block(inv, 150, 50)        # live data: battery, SOC, grid status
-        r.update(read_block(inv, 200, 81))  # configuration: battery, grid charge, TOU
+        r = read_block(inv, 150, 50)        # live data: SOC, grid status
+        r.update(read_block(inv, 200, 81))  # configuration: grid charge, TOU, peak shaving
+        r.update(read_block(inv, 280, 20))
         return r
     finally:
         inv.disconnect()
 
 
-def charge_plan(s: dict, r: dict[int, int], now: datetime, storm_start: datetime) -> tuple[datetime, str]:
-    """Return (charge start, explanation) so the battery reaches target_soc by the deadline."""
-    ready = datetime.combine(now.date(), s["ready_by_t"], s["tz"])
-    deadline = min(max(ready, now), storm_start - timedelta(minutes=s["storm_margin_minutes"]))
-    soc = r[REG_SOC]
-    capacity_kwh = r[REG_BATTERY_CAPACITY] * s["battery_nominal_voltage"] / 1000
-    needed_kwh = max(0, s["target_soc"] - soc) / 100 * capacity_kwh
-    current = min(r[REG_GRID_CHARGE_CURRENT], r[REG_MAX_CHARGE_CURRENT])
-    power_kw = current * r[REG_BATTERY_VOLTAGE] / 100 / 1000 * s["charge_efficiency"]
-    if needed_kwh == 0:
-        return now, f"SOC {soc} % already at or above {s['target_soc']} %: holding"
-    if power_kw <= 0:
-        return now, "charge power unknown (grid charge current is 0?): charging now"
-    hours = needed_kwh / power_kw
-    start = deadline - timedelta(hours=hours)
-    start = start.replace(minute=start.minute - start.minute % 5, second=0, microsecond=0)
-    info = (f"{needed_kwh:.1f} kWh needed ({soc} % -> {s['target_soc']} %) at ~{power_kw:.1f} kW "
-            f"= {hours:.1f} h, ready by {deadline:%H:%M}")
-    return (start, info) if start > now else (now, info + " (starting now)")
-
-
-def slot_times(start: dtime) -> list[str]:
-    """6 increasing slot start times: 00:00, the charge start, then 4 more after it."""
-    times = ["00:00", f"{start:%H:%M}"]
-    for candidate in ("08:00", "12:00", "16:00", "20:00", "22:00", "23:00"):
-        if len(times) == 6:
-            break
-        if candidate > times[-1]:
-            times.append(candidate)
-    t = datetime.combine(date.today(), start)
-    while len(times) < 6:  # charge start very late in the day: fill with 5-minute steps
-        t += timedelta(minutes=5)
-        if f"{t:%H:%M}" > times[-1]:
-            times.append(f"{t:%H:%M}")
-    return times
-
-
-def base_soc(previous: dict | None, now: datetime, default: int) -> int:
-    """SOC of the pre-storm slot active at 'now' (normal minimum battery level)."""
-    slots = (previous or {}).get("tou", [])
-    active = None
-    for slot in sorted(slots, key=lambda x: x["time"]):
-        if slot["time"] <= f"{now:%H:%M}":
-            active = slot
-    if active is None and slots:
-        active = max(slots, key=lambda x: x["time"])  # before the first slot: the last one wraps
-    return active["soc"] if active else default
-
-
-def desired_layout(s: dict, state: dict, regmap: dict, now: datetime, grid_ok: bool,
-                   previous: dict | None) -> tuple[str, dict]:
-    """Return (phase, profile) the inverter should have now, in storm mode."""
-    n = regmap["tou"]["slots"]
-    if not grid_ok or state.get("deferred"):
-        phase = "outage: battery available down to outage_soc" if not grid_ok else \
-                "after outage: waiting for next planning"
-        return phase, {"tou": [{"slot": i + 1, "soc": s["outage_soc"]} for i in range(n)]}
-    params = {"grid_charge": True, "time_of_use": "MTWTFSS"}
-    start = dt(state["charge_start"], s["tz"])
-    if start > now and start.date() == now.date() and start.time() > dtime(0, 0):
-        times = slot_times(start.time())
-        tou = [{"slot": 1, "time": times[0], "soc": base_soc(previous, now, s["outage_soc"]),
-                "grid_charge": False}]
-        tou += [{"slot": i + 1, "time": times[i], "soc": s["target_soc"], "grid_charge": True}
-                for i in range(1, n)]
-        return f"waiting: grid charge starts at {start:%H:%M}", {"parameters": params, "tou": tou}
-    tou = [{"slot": i + 1, "soc": s["target_soc"], "grid_charge": True} for i in range(n)]
-    return f"charging / holding at {s['target_soc']} %", {"parameters": params, "tou": tou}
-
-
 # ------------------------------------------------------------------ the service
 
 class StormService:
-    def __init__(self, s, conf, regmap, map_path, serial, apply, assume_storm, assume_outage, at=None):
-        self.s, self.conf, self.regmap, self.map_path, self.serial = s, conf, regmap, map_path, serial
-        self.apply, self.assume_storm, self.assume_outage = apply, assume_storm, assume_outage
-        self.at = at  # simulated current time (testing)
+    def __init__(self, s, tariff, conf, regmap, map_path, serial, apply,
+                 assume_storm=None, assume_outage=False, at=None):
+        self.s, self.tariff, self.conf, self.regmap = s, tariff, conf, regmap
+        self.map_path, self.serial, self.apply = map_path, serial, apply
+        self.assume_storm, self.assume_outage, self.at = assume_storm, assume_outage, at
         self.state = load_state()
         self.events: list[tuple[datetime, str]] = []
 
@@ -288,11 +202,19 @@ class StormService:
         if self.apply:
             save_state(self.state)
 
-    def previous_profile(self) -> dict | None:
-        if PRE_STORM_PROFILE.exists():
-            with PRE_STORM_PROFILE.open("rb") as f:
-                return tomllib.load(f)
-        return None
+    def storm_now(self, now: datetime) -> bool:
+        return any(t <= now < t + timedelta(hours=1) for t, _ in self.events)
+
+    def storm_within(self, now: datetime, hours: float) -> bool:
+        return any(t + timedelta(hours=1) > now and t <= now + timedelta(hours=hours) for t, _ in self.events)
+
+    def last_cheap_chance(self, now: datetime, storm: datetime) -> bool:
+        """True if no other off-peak or mid period starts between the current period and the storm."""
+        _, current_start, _ = self.tariff.period_at(now)
+        for name, start, _ in self.tariff.iter_periods(now, storm):
+            if start > current_start and name in ("off-peak", "mid"):
+                return False
+        return True
 
     def write_allowed(self) -> bool:
         today = self.now().date().isoformat()
@@ -336,8 +258,8 @@ class StormService:
         return True
 
     # -- storm mode transitions
-    def enter_storm(self, reason: str, charge_start: datetime, info: str, now: datetime) -> None:
-        log(f"Entering storm mode: {reason}. Charge plan: {info}.")
+    def enter_storm(self, reason: str, now: datetime) -> None:
+        log(f"Entering storm mode: {reason}.")
         if self.apply:
             serial, full = read_registers(self.conf, self.regmap)
             STATE_DIR.mkdir(exist_ok=True)
@@ -345,107 +267,120 @@ class StormService:
             log(f"Current configuration saved to {PRE_STORM_PROFILE}")
         self.state.update(mode="storm", since=now.isoformat(), reason=reason,
                           storm_until=self.events[-1][0].isoformat(),
-                          target_storm=self.events[0][0].isoformat(),
-                          charge_start=charge_start.isoformat(),
-                          deferred=False, outage=False, clear_checks=0)
+                          emergency=False, outage=False, clear_checks=0)
         self.persist()
 
     def exit_storm(self, why: str) -> None:
         log(f"Leaving storm mode: {why}. Restoring the previous configuration.")
-        previous = self.previous_profile()
-        if previous is None:
-            log(f"ERROR: {PRE_STORM_PROFILE} not found. Restore manually with deye_apply.py.")
-        else:
+        if PRE_STORM_PROFILE.exists():
+            with PRE_STORM_PROFILE.open("rb") as f:
+                previous = tomllib.load(f)
             serial, full = read_registers(self.conf, self.regmap)
             if not self.apply_profile(previous, "pre-storm configuration", full):
                 return  # keep storm mode and try again next check
-        for key in ("since", "reason", "storm_until", "target_storm", "charge_start", "deferred",
-                    "outage", "clear_checks"):
+        else:
+            log(f"ERROR: {PRE_STORM_PROFILE} not found. Restore manually with deye_apply.py.")
+        for key in STATE_KEYS + ("charge_start", "target_storm", "deferred"):  # also legacy keys
             self.state.pop(key, None)
         self.state["mode"] = "normal"
         self.persist()
         log("Storm mode finished.")
 
-    # -- periodic checks
-    def in_planning_window(self, now: datetime) -> bool:
-        return self.s["planning_t"] <= now.time() < self.s["ready_by_t"]
+    # -- layout
+    def desired_layout(self, now: datetime, grid_ok: bool) -> tuple[str, dict]:
+        s, n = self.s, self.regmap["tou"]["slots"]
+        if not grid_ok:
+            return (f"grid down: battery available down to {s['outage_soc']} %",
+                    {"tou": [{"slot": i + 1, "soc": s["outage_soc"]} for i in range(n)]})
+        emergency = self.state.get("emergency", False)
+        tou = []
+        for i, (start, period) in enumerate(self.tariff.slot_layout(now.date(), n)):
+            if period == "off-peak":
+                soc, grid = s["charge_soc"], True
+            elif period == "mid":
+                soc, grid = s["hold_soc"], True
+            elif emergency:
+                soc, grid = s["emergency_soc"], True
+            else:
+                soc, grid = s["hold_soc"], False
+            tou.append({"slot": i + 1, "time": start, "soc": soc, "grid_charge": grid})
+        params = {"grid_charge": True, "time_of_use": "MTWTFSS"}
+        if s["grid_power_limit"]:
+            params.update(grid_peak_shaving=True, grid_peak_shaving_power=s["grid_power_limit"])
+        period = self.tariff.period_at(now)[0]
+        return (f"{period} period" + (", emergency charge" if emergency else ""),
+                {"parameters": params, "tou": tou})
 
-    def forecast_check(self, plan_now: bool = False) -> None:
+    # -- periodic checks
+    def forecast_check(self) -> None:
         s, now = self.s, self.now()
         self.events = find_storms(fetch_forecast(s), s, now)
         if self.assume_storm is not None:
-            simulated = now + timedelta(hours=self.assume_storm)
-            self.events = sorted(self.events + [(simulated, "simulated storm (--assume-storm)")])
+            self.events = sorted(self.events + [(now + timedelta(hours=self.assume_storm),
+                                                 "simulated storm (--assume-storm)")])
         r = read_live(self.conf)
         soc = r[REG_SOC]
-        planning = plan_now or self.in_planning_window(now)
-        storm_now = any(t <= now < t + timedelta(hours=1) for t, _ in self.events)
+        period = self.tariff.period_at(now)[0]
+        storm_now = self.storm_now(now)
         first = self.events[0][0] if self.events else None
         storm = self.state["mode"] == "storm"
 
-        log(f"[{now:%Y-%m-%d %H:%M}] SOC {soc} % | grid {'OK' if r[REG_GRID_STATUS] == 1 else 'DOWN'} | "
-            f"storm mode {'ACTIVE' if storm else 'inactive'} | next {s['forecast_hours']} h: "
-            + (f"{len(self.events)} storm hour(s), first at {first:%d/%m %H:%M}" if self.events else "no storms")
-            + (" | planning window" if planning else ""))
+        log(f"[{now:%Y-%m-%d %H:%M}] {period} | SOC {soc} % | grid "
+            f"{'OK' if r[REG_GRID_STATUS] == 1 and not self.assume_outage else 'DOWN'} | storm mode {'ACTIVE' if storm else 'inactive'} | "
+            f"next {s['forecast_hours']} h: "
+            + (f"{len(self.events)} storm hour(s), first at {first:%d/%m %H:%M}" if self.events else "no storms"))
 
         if not storm:
             if not self.events:
                 return
             if storm_now:
-                _, info = charge_plan(s, r, now, first)
-                self.enter_storm("storm happening now", now, info.split(", ready by")[0] + ", starting now", now)
-            elif planning:
-                start, info = charge_plan(s, r, now, first)
-                self.enter_storm(f"storm forecast at {first:%d/%m %H:%M}", start, info, now)
-            elif (s["backup_enabled"] and soc < s["backup_trigger_soc"]
-                  and first - now <= timedelta(hours=s["backup_hours"])):
-                _, info = charge_plan(s, r, now, first)
-                info = info.split(", ready by")[0] + ", starting now"
-                self.enter_storm(f"backup: storm at {first:%H:%M} and SOC {soc} % "
-                                 f"< {s['backup_trigger_soc']} %", now, info, now)
+                reason = "storm happening now"
+            elif period == "off-peak":
+                reason = f"storm forecast at {first:%d/%m %H:%M}, charging in the off-peak period"
+            elif (period == "peak" and soc < s["emergency_soc"]
+                  and self.storm_within(now, s["emergency_hours"])):
+                reason = f"emergency: storm at {first:%H:%M} and SOC {soc} % < {s['emergency_soc']} %"
+            elif (period == "mid" and s["backup_enabled"] and soc < s["backup_trigger_soc"]
+                  and self.last_cheap_chance(now, first)):
+                reason = (f"backup: storm at {first:%d/%m %H:%M}, SOC {soc} % < {s['backup_trigger_soc']} % "
+                          "and this is the last cheap period before it")
             else:
-                log("Storm forecast later; it will be planned in the next planning window.")
+                log("Storm forecast later; waiting for a cheaper period or for the storm.")
                 return
+            self.enter_storm(reason, now)
             self.grid_check(r)
             return
 
         # ---- already in storm mode
-        until = dt(self.state["storm_until"], s["tz"])
+        until = datetime.fromisoformat(self.state["storm_until"]).astimezone(s["tz"])
         if self.events:
             self.state["clear_checks"] = 0
             if self.events[-1][0] > until:
                 until = self.events[-1][0]
                 self.state["storm_until"] = until.isoformat()
-            target = self.state.get("target_storm")
-            charge_start = dt(self.state["charge_start"], s["tz"])
-            if storm_now:
-                if charge_start > now:
-                    self.state["charge_start"] = now.isoformat()
-                    log("Storm happening now: charging now.")
-            elif planning and first.isoformat() != target:
-                # The storm the charge was planned for has passed or changed: plan for the next one
-                start, info = charge_plan(s, r, now, first)
-                self.state.update(charge_start=start.isoformat(), target_storm=first.isoformat(), deferred=False)
-                log(f"Replanning for the storm at {first:%d/%m %H:%M}: {info}.")
         else:
             self.state["clear_checks"] = self.state.get("clear_checks", 0) + 1
         self.persist()
 
         restore_at = until + timedelta(hours=s["grace_hours"])
-        since = dt(self.state["since"], s["tz"])
+        since = datetime.fromisoformat(self.state["since"]).astimezone(s["tz"])
+        next_off_peak = self.tariff.next_start_of("off-peak", now, first) if first else None
         if now > since + timedelta(hours=s["max_hours"]):
             self.exit_storm(f"active for more than {s['max_hours']} h (safety limit)")
         elif not self.events and now >= restore_at:
             self.exit_storm("the storm has passed")
         elif not self.events and until > now and self.state["clear_checks"] >= 2:
             self.exit_storm("the storm is no longer forecast")
+        elif self.events and not storm_now and period != "off-peak" and next_off_peak:
+            self.exit_storm(f"the next storm ({first:%d/%m %H:%M}) comes after the next off-peak period "
+                            f"({next_off_peak:%d/%m %H:%M}), it will be handled then")
         else:
             log(f"Storm mode active (since {since:%d/%m %H:%M}); restoring after {restore_at:%d/%m %H:%M} "
                 "if no more storms are forecast.")
             self.grid_check(r)
 
     def grid_check(self, r: dict[int, int] | None = None) -> None:
-        """In storm mode: make sure the inverter has the right Time Of Use layout."""
+        """In storm mode: outage detection, emergency charge and Time Of Use layout."""
         if self.state["mode"] != "storm":
             return
         s, now = self.s, self.now()
@@ -456,15 +391,22 @@ class StormService:
             log(f"[{now:%H:%M}] Grid DOWN: making the battery available down to {s['outage_soc']} %.")
             self.state["outage"] = True
         elif grid_ok and self.state.get("outage"):
+            log(f"[{now:%H:%M}] Grid back: resuming the storm mode layout.")
             self.state["outage"] = False
-            if s["recharge_after_outage"]:
-                self.state.update(charge_start=now.isoformat(), deferred=False)
-                log(f"[{now:%H:%M}] Grid back: recharging to {s['target_soc']} %.")
-            else:
-                self.state["deferred"] = True
-                log(f"[{now:%H:%M}] Grid back: recharge deferred to the next planning run.")
+
+        # Emergency charge in peak periods, latched until the period ends
+        period, start, _ = self.tariff.period_at(now)
+        if self.state.get("emergency") and self.state.get("emergency_period") != start.isoformat():
+            self.state["emergency"] = False
+            log(f"[{now:%H:%M}] Emergency charge finished (end of the peak period).")
+        if (grid_ok and period == "peak" and not self.state.get("emergency")
+                and r[REG_SOC] < s["emergency_soc"] and self.storm_within(now, s["emergency_hours"])):
+            self.state.update(emergency=True, emergency_period=start.isoformat())
+            log(f"[{now:%H:%M}] Emergency: SOC {r[REG_SOC]} % < {s['emergency_soc']} % with a storm "
+                f"within {s['emergency_hours']} h, charging up to {s['emergency_soc']} % in the peak period.")
         self.persist()
-        phase, layout = desired_layout(s, self.state, self.regmap, now, grid_ok, self.previous_profile())
+
+        phase, layout = self.desired_layout(now, grid_ok)
         self.apply_profile(layout, f"storm mode ({phase})", r)
 
     def run_forever(self) -> None:
@@ -473,18 +415,14 @@ class StormService:
             signal.signal(sig, lambda *_: stop.set())
         s = self.s
         log(f"Storm mode service started: forecast every {s['forecast_interval']} s, grid every "
-            f"{s['grid_check_interval']} s in storm mode, planning at {s['planning_time']}, "
-            f"{'APPLY' if self.apply else 'dry run'} mode.")
-        next_forecast = 0.0
+            f"{s['grid_check_interval']} s in storm mode, {'APPLY' if self.apply else 'dry run'} mode.")
+        next_forecast, last_period = 0.0, None
         while not stop.is_set():
             try:
-                now = self.now()
-                window_start = self.in_planning_window(now) and self.state.get("last_window") != now.date().isoformat()
-                if time.monotonic() >= next_forecast or window_start:
-                    if window_start:
-                        self.state["last_window"] = now.date().isoformat()  # first check of the window
-                    self.forecast_check()
-                    next_forecast = time.monotonic() + s["forecast_interval"]
+                period_start = self.tariff.period_at(self.now())[1]
+                if time.monotonic() >= next_forecast or period_start != last_period:
+                    self.forecast_check()  # also at every tariff period change
+                    next_forecast, last_period = time.monotonic() + s["forecast_interval"], period_start
                 else:
                     self.grid_check()
             except (Exception, SystemExit) as e:  # never stop the service because of one failed check
@@ -496,13 +434,11 @@ class StormService:
 # ------------------------------------------------------------------ main
 
 def main():
-    parser = argparse.ArgumentParser(description="Storm mode: pre-charge the battery when storms are forecast")
+    parser = argparse.ArgumentParser(description="Storm mode: keep the battery charged when storms are forecast")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--show", action="store_true", help="Only show what it would do (default)")
     mode.add_argument("--apply", action="store_true", help="Act on the inverter (no confirmation)")
     parser.add_argument("--daemon", action="store_true", help="Run continuously as a service")
-    parser.add_argument("--plan-now", action="store_true",
-                        help="Run the planning logic now, as if it were planning_time")
     parser.add_argument("--assume-storm", nargs="?", const=2.0, type=float, metavar="HOURS",
                         help="Pretend a storm is forecast in HOURS hours, default 2 (testing, dry run only)")
     parser.add_argument("--assume-outage", action="store_true",
@@ -516,20 +452,20 @@ def main():
     if (args.assume_storm is not None or args.assume_outage or args.at) and (args.apply or args.daemon):
         sys.exit("ERROR: --assume-storm, --assume-outage and --at are for testing (single dry run only)")
 
-    s = load_storm_settings(args.config)
+    s, tariff = load_settings(args.config)
     conf = load_config(args.config)
     map_path, regmap = load_map(args.config)
     if "tou" not in regmap:
         sys.exit("ERROR: this inverter's map does not define Time Of Use slots")
-    serial, _ = read_registers(conf, regmap)
-
     at = None
     if args.at:
         try:
             at = datetime.strptime(args.at, "%Y-%m-%d %H:%M").replace(tzinfo=s["tz"])
         except ValueError:
-            sys.exit("ERROR: --at must be like '2026-10-07 00:05'")
-    service = StormService(s, conf, regmap, map_path, serial, args.apply,
+            sys.exit("ERROR: --at must be like '2026-10-08 15:00'")
+    serial, _ = read_registers(conf, regmap)
+
+    service = StormService(s, tariff, conf, regmap, map_path, serial, args.apply,
                            args.assume_storm, args.assume_outage, at)
     if not args.apply:
         service.state = copy.deepcopy(service.state)  # dry run: never persisted
@@ -538,7 +474,9 @@ def main():
         service.run_forever()
         return
     try:
-        service.forecast_check(plan_now=args.plan_now)
+        service.forecast_check()
+        if args.assume_outage and service.state["mode"] == "storm" and not service.state.get("outage"):
+            service.grid_check()
     except Exception as e:
         sys.exit(f"ERROR during check: {e}")
 
