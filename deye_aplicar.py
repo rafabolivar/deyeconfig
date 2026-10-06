@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Aplica un perfil de configuración (perfiles/*.toml) a un inversor Deye.
+Aplica un perfil de configuración (profiles/*.toml) a un inversor Deye.
 
 Uso:
-    python deye_aplicar.py perfiles/invierno.toml             # muestra qué cambiaría
-    python deye_aplicar.py perfiles/invierno.toml --show   # ídem, de forma explícita
-    python deye_aplicar.py perfiles/invierno.toml --apply   # escribe (pide confirmación)
-    python deye_aplicar.py perfiles/invierno.toml --apply --yes   # escribe sin preguntar
+    python deye_aplicar.py profiles/invierno.toml             # muestra qué cambiaría
+    python deye_aplicar.py profiles/invierno.toml --show   # ídem, de forma explícita
+    python deye_aplicar.py profiles/invierno.toml --apply   # escribe (pide confirmación)
+    python deye_aplicar.py profiles/invierno.toml --apply --yes   # escribe sin preguntar
 
 Proceso:
   1. Valida el perfil completo (parámetros existentes, escribibles y en rango).
@@ -149,7 +149,7 @@ def escribir(conf: dict, r: dict[int, int], propuesto: dict[int, int]) -> list[s
 
 def main():
     parser = argparse.ArgumentParser(description="Aplica un perfil de configuración al inversor Deye")
-    parser.add_argument("perfil", type=Path, help="Fichero de perfil (p. ej. perfiles/invierno.toml)")
+    parser.add_argument("perfil", metavar="profile", type=Path, help="Fichero de perfil (p. ej. profiles/invierno.toml)")
     modo = parser.add_mutually_exclusive_group()
     modo.add_argument("--show", action="store_true", help="Solo mostrar qué cambiaría (por defecto)")
     modo.add_argument("--apply", action="store_true", help="Escribir los cambios en el inversor")

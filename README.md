@@ -39,14 +39,14 @@ una copia de seguridad en JSON con todos los registros en bruto en `backups/`
 
 ## Aplicar un perfil de configuración
 
-Un perfil (`perfiles/*.toml`) indica solo los parámetros que se quieren cambiar,
+Un perfil (`profiles/*.toml`) indica solo los parámetros que se quieren cambiar,
 en unidades normales (A, %, V, "HH:MM", true/false). El resto no se toca.
 
 ```bash
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml             # muestra qué cambiaría
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml --show   # ídem, explícito
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml --apply   # escribe (pide confirmación)
-.venv/bin/python deye_aplicar.py perfiles/invierno.toml --apply --yes   # sin confirmación (cron)
+.venv/bin/python deye_aplicar.py profiles/invierno.toml             # muestra qué cambiaría
+.venv/bin/python deye_aplicar.py profiles/invierno.toml --show   # ídem, explícito
+.venv/bin/python deye_aplicar.py profiles/invierno.toml --apply   # escribe (pide confirmación)
+.venv/bin/python deye_aplicar.py profiles/invierno.toml --apply --yes   # sin confirmación (cron)
 ```
 
 Sin `--apply` nunca se escribe nada. Con `--apply`:
@@ -80,7 +80,7 @@ carga_red = true
 Por seguridad, algunos parámetros son de solo lectura (protecciones de red, tipo de
 batería, tensiones de carga...). Se controla con `escribible` en el mapa.
 
-Los perfiles de `perfiles/` son ejemplos: revísalos y ajústalos a tu instalación
+Los perfiles de `profiles/` son ejemplos: revísalos y ajústalos a tu instalación
 antes de aplicarlos.
 
 ## Mapas de registros

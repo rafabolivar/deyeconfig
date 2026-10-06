@@ -13,7 +13,7 @@
 #   dias    registro Time Of Use: bit0 activo, bits 1-7 lunes..domingo
 #   fecha   reloj del inversor (3 registros)
 #
-# id:         identificador usado en los perfiles (perfiles/*.toml)
+# id:         identificador usado en los perfiles (profiles/*.toml)
 # escribible: si los perfiles pueden modificarlo (false = solo lectura, por seguridad)
 # min / max:  rango permitido al escribir, en las unidades del parámetro
 
