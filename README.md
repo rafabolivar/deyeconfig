@@ -1,5 +1,7 @@
 # deyeconfig
 
+**English** | [Español](README.es.md)
+
 Read and change the configuration of Deye hybrid inverters through the Solarman
 data logger on your local network (Modbus TCP, port 8899), without relying on the
 cloud. Includes a storm mode service that pre-charges the battery from the grid
