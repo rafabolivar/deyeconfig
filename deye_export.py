@@ -82,6 +82,11 @@ def main():
                         help="Path to the configuration file (default: config.toml)")
     args = parser.parse_args()
 
+    if args.output and args.output.suffix.lower() != ".toml":
+        fixed = args.output.with_suffix(".toml")
+        print(f"Note: profiles are TOML files, saving as {fixed} instead of {args.output}", file=sys.stderr)
+        args.output = fixed
+
     if args.output and args.output.exists() and not args.force:
         sys.exit(f"ERROR: {args.output} already exists. Use --force to overwrite it.")
 

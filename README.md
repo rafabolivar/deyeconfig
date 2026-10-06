@@ -47,10 +47,10 @@ A profile (`profiles/*.toml`) lists only the parameters to change, in normal uni
 (A, %, V, "HH:MM", true/false). Everything else is left untouched.
 
 ```bash
-.venv/bin/python deye_apply.py profiles/winter.toml                # show what would change
-.venv/bin/python deye_apply.py profiles/winter.toml --show         # same, explicitly
-.venv/bin/python deye_apply.py profiles/winter.toml --apply        # write (asks for confirmation)
-.venv/bin/python deye_apply.py profiles/winter.toml --apply --yes  # no confirmation (cron)
+.venv/bin/python deye_apply.py profiles/examples/winter.toml                # show what would change
+.venv/bin/python deye_apply.py profiles/examples/winter.toml --show         # same, explicitly
+.venv/bin/python deye_apply.py profiles/examples/winter.toml --apply        # write (asks for confirmation)
+.venv/bin/python deye_apply.py profiles/examples/winter.toml --apply --yes  # no confirmation (cron)
 ```
 
 Nothing is ever written without `--apply`. With `--apply`:
@@ -84,8 +84,10 @@ grid_charge = true
 For safety, some parameters are read-only (grid protections, battery type, charging
 voltages...). This is controlled by `writable` in the map.
 
-The profiles in `profiles/` are examples: review them and adjust them to your
-installation before applying them.
+The profiles in `profiles/examples/` are examples: review them and adjust them to
+your installation before applying them. Keep your own profiles directly in
+`profiles/` (e.g. `profiles/winter.toml`): they are excluded from the repository by
+`.gitignore`, so your personal settings are never committed.
 
 ## Exporting the current configuration as a profile
 
@@ -97,7 +99,8 @@ installation before applying them.
 
 Creates a profile with the inverter's current values: all writable parameters and
 the 6 Time Of Use slots, ready to be applied with `deye_apply.py`. Read-only
-parameters are included as comments, for reference. Read-only.
+parameters are included as comments, for reference. The `.toml` extension is added
+automatically if missing. Read-only.
 
 Useful as a starting point for your own profiles (export, remove the lines you do
 not want to change, adjust the rest) or to save a configuration you want to go

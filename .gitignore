@@ -8,3 +8,7 @@ __pycache__/
 
 # Inverter configuration backups
 backups/
+
+# Personal profiles (only the examples are part of the repository)
+profiles/*
+!profiles/examples/

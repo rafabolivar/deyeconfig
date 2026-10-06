@@ -3,10 +3,10 @@
 Applies a configuration profile (profiles/*.toml) to a Deye inverter.
 
 Usage:
-    python deye_apply.py profiles/winter.toml                # show what would change
-    python deye_apply.py profiles/winter.toml --show         # same, explicitly
-    python deye_apply.py profiles/winter.toml --apply        # write (asks for confirmation)
-    python deye_apply.py profiles/winter.toml --apply --yes  # write without asking
+    python deye_apply.py profiles/examples/winter.toml                # show what would change
+    python deye_apply.py profiles/examples/winter.toml --show         # same, explicitly
+    python deye_apply.py profiles/examples/winter.toml --apply        # write (asks for confirmation)
+    python deye_apply.py profiles/examples/winter.toml --apply --yes  # write without asking
 
 Process:
   1. Validates the whole profile (parameters exist, are writable and in range).
@@ -147,7 +147,7 @@ def write(conf: dict, r: dict[int, int], proposed: dict[int, int]) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Apply a configuration profile to a Deye inverter")
-    parser.add_argument("profile", type=Path, help="Profile file (e.g. profiles/winter.toml)")
+    parser.add_argument("profile", type=Path, help="Profile file (e.g. profiles/examples/winter.toml)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--show", action="store_true", help="Only show what would change (default)")
     mode.add_argument("--apply", action="store_true", help="Write the changes to the inverter")
