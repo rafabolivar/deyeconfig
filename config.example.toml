@@ -1,0 +1,24 @@
+# Configuración de conexión con el inversor Deye a través del datalogger Solarman.
+# Copia este fichero como config.toml y rellena tus datos:
+#     cp config.example.toml config.toml
+# config.toml está en .gitignore y no se sube al repositorio.
+
+[logger]
+# IP del datalogger (stick WiFi/LAN) en tu red local.
+# Recomendado: fijarla con una reserva DHCP en el router.
+ip = "192.168.1.100"
+
+# Número de serie del LOGGER (pegatina del stick o app Solarman),
+# no el del inversor. Es un número, sin comillas.
+serial = 0
+
+# Puerto Modbus TCP del logger (normalmente 8899).
+port = 8899
+
+[modbus]
+# ID de esclavo Modbus del inversor (normalmente 1).
+slave_id = 1
+
+# Tiempo máximo de espera de la conexión, en segundos.
+timeout = 10
+
