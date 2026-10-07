@@ -305,7 +305,7 @@ class Model:
         cost -= (soc - self.min) * self.eff_d * terminal
         return (cost, rows) if detail else cost
 
-    def optimize(self, hours, soc0):
+    def optimize(self, hours, soc0, no_discharge=()):
         """Optimal plan by linear programming (HiGHS). Returns per hour: grid charge (kWh),
         battery discharge (kWh) and SOC at the end of the hour (kWh)."""
         n = len(hours)
@@ -344,7 +344,8 @@ class Model:
             A_ub.append(row)
             b_ub.append(-reserve[t])
         bounds = ([(0, self.max_grid_charge_kw * f) for f in frac]
-                  + [(0, min(dd, self.max_discharge_kw * f)) for dd, f in zip(deficit, frac)]
+                  + [(0, 0 if t in no_discharge else min(dd, self.max_discharge_kw * f))
+                     for t, (dd, f) in enumerate(zip(deficit, frac))]
                   + [(0, min(ss, self.max_charge_kw * f)) for ss, f in zip(surplus, frac)]
                   + [(self.min, self.max)] * n + [(0, None)] * n)
         res = linprog(cost, A_ub=np.array(A_ub), b_ub=b_ub, A_eq=np.array(A_eq), b_eq=b_eq,
