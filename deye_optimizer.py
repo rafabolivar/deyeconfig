@@ -170,24 +170,46 @@ def fetch_day_prices(d: date, tz) -> dict[str, float]:
     return prices
 
 
+MIN_VALID_PRICE = 0.01  # EUR/kWh: PVPC includes tolls and charges, so it is never this low
+
+
+def valid_day(prices: dict[str, float]) -> bool:
+    """A day is valid with 23-25 hourly prices (DST days) that are all plausible.
+    REData sometimes publishes a day filled with zeros before the real prices."""
+    return 23 <= len(prices) <= 25 and all(v >= MIN_VALID_PRICE for v in prices.values())
+
+
 class PriceCache:
     def __init__(self, tz, tariff: Tariff, fallback: dict):
         self.tz, self.tariff, self.fallback = tz, tariff, fallback
         self.prices: dict[str, float] = json.loads(PRICE_CACHE.read_text()) if PRICE_CACHE.exists() else {}
 
+    def day(self, d: date) -> dict[str, float]:
+        return {k: v for k, v in self.prices.items() if k.startswith(d.isoformat())}
+
     def has_day(self, d: date) -> bool:
-        return sum(1 for k in self.prices if k.startswith(d.isoformat())) >= 23  # 23-25 h on DST days
+        return valid_day(self.day(d))
 
     def update(self, now: datetime) -> None:
         days = [now.date()] + ([now.date() + timedelta(days=1)] if now.hour >= 20 else [])
         changed = False
         for d in days:  # tomorrow's PVPC is published around 20:15
             if not self.has_day(d):
-                try:
-                    self.prices.update(fetch_day_prices(d, self.tz))
+                for k in self.day(d):  # drop invalid or incomplete data for that day
+                    self.prices.pop(k)
                     changed = True
+                try:
+                    fetched = fetch_day_prices(d, self.tz)
                 except Exception as e:
                     log(f"Prices for {d} not available yet ({e.__class__.__name__}).")
+                    continue
+                if valid_day(fetched):
+                    self.prices.update(fetched)
+                    changed = True
+                    log(f"PVPC prices for {d} received.")
+                else:
+                    log(f"Prices for {d} not valid yet (REData returned {len(fetched)} values, "
+                        f"min {min(fetched.values(), default=0):.3f}); using estimates.")
         if changed:
             cutoff = (now.date() - timedelta(days=7)).isoformat()
             self.prices = {k: v for k, v in self.prices.items() if k >= cutoff}
