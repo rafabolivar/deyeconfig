@@ -15,3 +15,6 @@ profiles/*
 
 # Storm mode state (deye_storm.py)
 state/
+
+# Local analysis data (personal)
+analysis/
