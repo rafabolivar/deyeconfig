@@ -282,9 +282,20 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
      teniendo en cuenta las pérdidas de la batería, un coste de desgaste por kWh y el
      valor de la energía que queda al final. El sol carga primero; la red solo
      completa lo que compensa comprar.
-  5. Construye las 6 franjas Time Of Use y la corriente de carga desde red (solo la
-     necesaria, hasta `max_grid_charge_current`) y las escribe solo si son distintas
-     de las del inversor.
+  5. Construye las 6 franjas Time Of Use y las escribe solo si son distintas de las
+     del inversor.
+- **La previsión solar del día se corrige con la producción medida**: en cuanto hay
+  al menos `pv_correction_min_hours` (2) horas de sol medidas, la previsión del resto
+  del día se ajusta con la proporción medida / prevista, para que el plan no compre
+  energía que el sol va a aportar igualmente.
+- **Control de la carga desde red en tiempo real** (cada minuto durante una franja de
+  carga): la corriente de carga desde red se fija en lo que no va a aportar el sol, a
+  partir de la energía que falta para el SOC objetivo de la franja, el tiempo que
+  queda de franja y el excedente solar medido. El objetivo se alcanza al final de la
+  franja, en lugar de llenar la batería antes de tiempo y exportar la producción
+  solar posterior. La corriente cambia en pasos de 5 A, como mucho cada
+  `charge_control_minutes` (10), hasta `max_grid_charge_current`. A igual precio, el
+  plan prefiere además cargar más tarde.
 - **Cada `grid_check_interval` segundos (60), protección por corte:** si se va la
   red, todas las franjas bajan a `outage_soc` (15 %) en el acto, para que toda la
   batería esté disponible. Cuando vuelve la red, el plan se recalcula
@@ -445,6 +456,11 @@ Solo como respaldo, cuando no hay precios PVPC reales disponibles.
 | `max_grid_charge_current` | 65 | Corriente máxima de carga desde red (A) |
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Límites de corriente de la batería (A) |
 | `horizon_hours` | 36 | Horas que planifica (limitadas por los precios publicados) |
+| `soc_step` | 5 | Los SOC de las franjas se redondean hacia arriba a este paso (%) |
+| `max_writes_per_day` | 24 | Límite de seguridad de escrituras de planes por día |
+| `charge_control_minutes` | 10 | Minutos mínimos entre cambios de la corriente de carga desde red |
+| `late_charge_preference` | 0.0001 | Preferencia (€/kWh por hora) por cargar más tarde a igual precio |
+| `pv_correction_min_hours` | 2 | Horas de sol medidas necesarias para corregir la previsión del día |
 | `load_profile` | unos 12,7 kWh/día | Consumo previsto (kW) de cada hora, de 00 a 23 |
 
 La ubicación y la zona horaria se toman de `[storm]` si no se indican en `[optimizer]`.

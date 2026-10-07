@@ -137,6 +137,19 @@ horizon_hours = 36
 soc_step = 5
 max_writes_per_day = 24
 
+# Real-time grid charge control: during a charge slot the grid charge current is
+# adjusted to the energy still needed, the time left and the measured solar surplus,
+# at most every charge_control_minutes minutes, in steps of 5 A.
+charge_control_minutes = 10
+
+# Tiny preference (EUR/kWh per hour) for charging later at equal price, to leave
+# room for the sun before.
+late_charge_preference = 0.0001
+
+# Today's solar forecast is corrected with the measured production once at least
+# this many daylight hours have been measured.
+pv_correction_min_hours = 2
+
 # Expected consumption (kW) for each hour of the day, 00 to 23.
 load_profile = [0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36,
                 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,

@@ -269,9 +269,19 @@ come from REData, Red Eléctrica's public API (no key needed).
      the grid while it is cheap) that minimise the total cost, including battery
      losses, a wear cost per kWh and the value of the energy left at the end.
      Solar charging comes first; the grid only completes what is worth buying.
-  5. Builds the 6 Time Of Use slots, the grid charge current (only what is needed,
-     up to `max_grid_charge_current`) and writes them only if they differ from the
+  5. Builds the 6 Time Of Use slots and writes them only if they differ from the
      inverter.
+- **Today's solar forecast is corrected with the measured production**: once at
+  least `pv_correction_min_hours` (2) daylight hours have been measured, the rest of
+  the day's forecast is scaled by the ratio measured / forecast, so the plan does not
+  buy energy the sun is going to provide anyway.
+- **Real-time grid charge control** (every minute during a charge slot): the grid
+  charge current is set to what the sun will not provide, from the energy still
+  needed to reach the slot's target SOC, the time left in the slot and the measured
+  solar surplus. The target is reached at the end of the slot instead of filling the
+  battery early and exporting the solar production that comes after. The current
+  changes in steps of 5 A, at most every `charge_control_minutes` (10), up to
+  `max_grid_charge_current`. At equal price the plan also prefers charging later.
 - **Every `grid_check_interval` seconds (60), outage protection:** if the grid goes
   down, all slots are lowered to `outage_soc` (15 %) at once, so the whole battery
   is available. When the grid returns, the plan is recalculated immediately.
@@ -429,6 +439,11 @@ Fallback only, used when the real PVPC prices are not available.
 | `max_grid_charge_current` | 65 | Maximum grid charge current (A) |
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Battery current limits (A) |
 | `horizon_hours` | 36 | Hours ahead to plan (limited by the published prices) |
+| `soc_step` | 5 | Slot SOC values are rounded up to this step (%) |
+| `max_writes_per_day` | 24 | Safety limit of plan writes per day |
+| `charge_control_minutes` | 10 | Minimum minutes between grid charge current changes |
+| `late_charge_preference` | 0.0001 | Preference (EUR/kWh per hour) for charging later at equal price |
+| `pv_correction_min_hours` | 2 | Measured daylight hours needed to correct today's solar forecast |
 | `load_profile` | about 12.7 kWh/day | Expected consumption (kW) for each hour, 00 to 23 |
 
 Location and time zone are taken from `[storm]` unless set in `[optimizer]`.

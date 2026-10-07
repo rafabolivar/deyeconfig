@@ -64,7 +64,11 @@ PLAN_LOG = STATE_DIR / "optimizer_log.csv"
 REDATA_API = "https://apidatos.ree.es/es/datos/mercados/precios-mercados-tiempo-real"
 FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 
+REG_LOAD_POWER = 178
 REG_BATTERY_VOLTAGE = 183
+REG_PV1_POWER = 186
+REG_PV2_POWER = 187
+REG_GRID_CHARGE_CURRENT = 230
 REG_SOC = 184
 REG_GRID_STATUS = 194
 REG_BATTERY_CAPACITY = 204
@@ -91,6 +95,9 @@ OPTIMIZER_DEFAULTS = {
     "horizon_hours": 36,
     "soc_step": 5,
     "max_writes_per_day": 24,
+    "charge_control_minutes": 10,
+    "late_charge_preference": 0.0001,
+    "pv_correction_min_hours": 2,
     "load_profile": DEFAULT_LOAD_PROFILE,
 }
 STORM_DEFAULTS = {
@@ -111,6 +118,10 @@ STORM_DEFAULTS = {
     "shortfall_penalty": 2.0,
 }
 DEFAULT_FALLBACK_PRICES = {"off-peak": 0.18, "mid": 0.15, "peak": 0.25}
+
+
+def s16(v: int) -> int:
+    return v - 65536 if v > 32767 else v
 
 
 def log(msg: str = "") -> None:
@@ -340,7 +351,8 @@ class Model:
         G, D, C, S, SH = (k * n for k in range(5))  # grid charge, discharge, solar charge, SOC, shortfall
         N = 5 * n
         cost = np.zeros(N)
-        cost[G:G + n] = price
+        # tiny preference for charging later at equal price: leaves room for the sun before
+        cost[G:G + n] = price + self.s["late_charge_preference"] * (n - np.arange(n))
         cost[D:D + n] = -price + self.s["cycle_cost"]
         cost[C:C + n] = self.s["export_price"]  # solar stored instead of exported
         cost[SH:SH + n] = self.st["shortfall_penalty"]
@@ -449,6 +461,13 @@ class Optimizer:
         self.prices = PriceCache(s["tz"], tariff, fallback)
         self.state = load_state()
         self.last_slots = None
+        self.plan_hours: list[dict] = []          # hours of the last plan (corrected solar, load)
+        self.solar_raw: dict[str, float] = {}     # last solar forecast, uncorrected (kWh per hour)
+        self.pv_actual: dict[str, float] = {}     # measured solar kWh per hour (today)
+        self.last_sample: tuple[datetime, float] | None = None
+        self.pv_ratio = 1.0
+        self.capacity_kwh = 0.0
+        self.last_current_write = 0.0
 
     # -- helpers
     def persist(self) -> None:
@@ -494,13 +513,89 @@ class Optimizer:
         self.persist()
         log("  Written and verified." if not failures else "  WARNING: " + "; ".join(failures))
 
+    # -- measured solar production
+    @staticmethod
+    def pv_kw(r) -> float:
+        return (r[REG_PV1_POWER] + r[REG_PV2_POWER]) / 1000
+
+    def sample_pv(self, r, now: datetime) -> None:
+        """Integrate the measured solar power into kWh per hour."""
+        kw = self.pv_kw(r)
+        if self.last_sample:
+            t0, kw0 = self.last_sample
+            dt = (now - t0).total_seconds() / 3600
+            if 0 < dt < 0.25:  # ignore long gaps (restarts, read failures)
+                key = now.replace(minute=0, second=0, microsecond=0).isoformat()
+                self.pv_actual[key] = self.pv_actual.get(key, 0.0) + (kw0 + kw) / 2 * dt
+        self.last_sample = (now, kw)
+        today = now.date().isoformat()
+        self.pv_actual = {k: v for k, v in self.pv_actual.items() if k.startswith(today)}
+
+    def update_pv_ratio(self, now: datetime) -> None:
+        """Ratio measured / forecast over today's completed daylight hours."""
+        current = now.replace(minute=0, second=0, microsecond=0).isoformat()
+        pairs = [(a, self.solar_raw.get(k, 0.0)) for k, a in self.pv_actual.items()
+                 if k < current and self.solar_raw.get(k, 0.0) >= 0.15]
+        if len(pairs) >= self.s["pv_correction_min_hours"]:
+            actual, forecast = sum(a for a, _ in pairs), sum(f for _, f in pairs)
+            self.pv_ratio = min(2.0, max(0.3, actual / forecast))
+        else:
+            self.pv_ratio = 1.0
+
+    # -- real-time grid charge control
+    def active_charge_slot(self, now: datetime):
+        """(target SOC %, slot end) if a charge slot of the last plan is active now."""
+        if not self.last_slots:
+            return None
+        starts = [int(x["time"][:2]) for x in self.last_slots]
+        for k, x in enumerate(self.last_slots):
+            start, end = starts[k], starts[k + 1] if k + 1 < len(starts) else 24
+            if start <= now.hour < end:
+                if not x["grid_charge"]:
+                    return None
+                slot_end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=end)
+                return x["soc"], slot_end
+        return None
+
+    def charge_control(self, r, now: datetime, force: bool = False) -> None:
+        """In a charge slot, ask the grid only for what the sun will not provide, so the
+        target SOC is reached at the end of the slot instead of filling the battery early."""
+        slot = self.active_charge_slot(now)
+        if not slot or not self.capacity_kwh:
+            return
+        target, slot_end = slot
+        remaining_h = max(0.25, (slot_end - now).total_seconds() / 3600)
+        needed = max(0.0, (target - r[REG_SOC]) / 100 * self.capacity_kwh) / self.s["charge_efficiency"]
+        # Solar surplus expected until the end of the slot: measured now for the current hour,
+        # corrected forecast for the following hours
+        surplus_now = max(0.0, self.pv_kw(r) - abs(s16(r[REG_LOAD_POWER])) / 1000)
+        expected = surplus_now * (1 - now.minute / 60)
+        for h in self.plan_hours:
+            if now < h["time"] and h["time"] < slot_end:
+                expected += max(0.0, h["pv"] - h["load"])
+        grid_kw = max(0.0, needed - expected) / remaining_h
+        voltage = r[REG_BATTERY_VOLTAGE] / 100 or self.s["battery_nominal_voltage"]
+        amps = min(self.s["max_grid_charge_current"], math.ceil(grid_kw * 1000 / voltage / 5) * 5)
+        current = r.get(REG_GRID_CHARGE_CURRENT)
+        if current is None or abs(amps - current) < 5:
+            return
+        if not force and time.monotonic() - self.last_current_write < self.s["charge_control_minutes"] * 60:
+            return
+        log(f"[{now:%H:%M}] Charge control: {needed:.1f} kWh to {target} % in {remaining_h * 60:.0f} min, "
+            f"solar surplus {surplus_now:.1f} kW now, {expected:.1f} kWh expected -> grid {grid_kw:.1f} kW "
+            f"({current} A -> {amps} A)")
+        self.write_profile({"parameters": {"grid_charge_current": amps}}, "charge control", r)
+        self.last_current_write = time.monotonic()
+
     # -- outage protection
     def outage_profile(self) -> dict:
         n = self.regmap["tou"]["slots"]
         return {"tou": [{"slot": i + 1, "soc": self.st["outage_soc"]} for i in range(n)]}
 
     def grid_check(self) -> None:
-        r = self.read(full=False)
+        now = datetime.now(self.s["tz"])
+        r = self.read(full=self.active_charge_slot(now) is not None)
+        self.sample_pv(r, now)
         ok = self.grid_ok(r)
         if not ok and not self.state.get("outage"):
             log(f"[{datetime.now(self.s['tz']):%H:%M}] Grid DOWN: battery available down to "
@@ -513,6 +608,8 @@ class Optimizer:
             self.state["outage"] = False
             self.persist()
             self.plan()
+        elif ok:
+            self.charge_control(r, now)
 
     # -- the plan
     def plan(self) -> None:
@@ -528,9 +625,13 @@ class Optimizer:
             return
 
         self.prices.update(now)
+        self.sample_pv(r, now)
         solar = fetch_solar(s)
+        self.solar_raw.update({k: v for k, v in solar.items() if k.startswith(now.date().isoformat())})
+        self.update_pv_ratio(now)
         voltage = r[REG_BATTERY_VOLTAGE] / 100 or s["battery_nominal_voltage"]
         model = Model(s, st, r[REG_BATTERY_CAPACITY] * s["battery_nominal_voltage"] / 1000, voltage)
+        self.capacity_kwh = model.cap
         soc0 = model.cap * r[REG_SOC] / 100
         start = now.replace(minute=0, second=0, microsecond=0)
 
@@ -561,9 +662,12 @@ class Optimizer:
             sources[source] = sources.get(source, 0) + 1
             frac = 1 - now.minute / 60 if k == 0 else 1.0
             reserve_pct = max([pct for a, b, pct in windows if a < t + timedelta(hours=1) and t < b], default=0)
-            hours.append({"time": t, "price": price, "frac": frac, "pv": solar.get(t.isoformat(), 0.0) * frac,
+            ratio = self.pv_ratio if t.date() == now.date() else 1.0  # correct today's forecast with measurements
+            hours.append({"time": t, "price": price, "frac": frac,
+                          "pv": solar.get(t.isoformat(), 0.0) * frac * ratio,
                           "load": s["load_profile"][t.hour] * frac, "reserve": model.cap * reserve_pct / 100})
 
+        self.plan_hours = hours
         gc, dis, soc, deficit = model.optimize(hours, soc0)
         actions = hour_actions(gc, dis, deficit)
         hold = [a == "hold" for a in actions]
@@ -582,7 +686,8 @@ class Optimizer:
                          f"[{first[2]}] | ")
         else:
             storm_txt = ""
-        log(f"[{now:%Y-%m-%d %H:%M}] SOC {r[REG_SOC]} % | prices: {src} | {storm_txt}"
+        pv_txt = f" | solar {self.pv_kw(r):.1f} kW, forecast x{self.pv_ratio:.2f}" if self.pv_ratio != 1.0 or self.pv_kw(r) > 0 else ""
+        log(f"[{now:%Y-%m-%d %H:%M}] SOC {r[REG_SOC]} %{pv_txt} | prices: {src} | {storm_txt}"
             f"cost {cost:.2f} EUR vs {baseline:.2f} without plan" + ("" if changed else " | plan unchanged"))
         if changed:
             log("  hour    EUR/kWh solar load  action   SOC  reserve")
@@ -592,16 +697,17 @@ class Optimizer:
                 log(f"  {h['time']:%d %H}h  {h['price']:.3f}  {h['pv']:4.1f} {h['load']:4.1f}  {actions[k]:7} "
                     f"{round(soc[k] / model.cap * 100):3d} %  {res_txt:7}{extra}")
             log("  Time Of Use: " + " | ".join(f"{x['time']} {x['action']} {x['soc']}%" for x in slots)
-                + f" | grid charge current {current} A")
+                + f" | grid charge up to {current} A (adjusted in real time)")
         self.last_slots = slots
 
+        # The grid charge current is set by the real-time charge control, not by the plan
         profile = {"parameters": {"grid_charge": True, "time_of_use": "MTWTFSS",
-                                  "grid_charge_current": current,
                                   "max_charge_current": s["max_charge_current"],
                                   "max_discharge_current": s["max_discharge_current"],
                                   "grid_peak_shaving": True, "grid_peak_shaving_power": s["grid_power_limit"]},
                    "tou": [{k: v for k, v in x.items() if k != "action"} for x in slots]}
         self.write_profile(profile, "plan", r)
+        self.charge_control(r, now, force=changed)
 
         STATE_DIR.mkdir(exist_ok=True)
         PLAN_FILE.write_text(json.dumps({
