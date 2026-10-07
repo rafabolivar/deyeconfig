@@ -56,7 +56,7 @@ reales de la electricidad de cada hora y protege la casa ante tormentas y cortes
     fijarla con una reserva DHCP. También puedes encontrarla buscando en tu red el
     dispositivo con el puerto TCP 8899 abierto.
 - Python 3.11 o superior en un equipo de la misma red (basta con una pequeña VM Linux).
-- Para el modo tormenta: acceso a Internet (previsión meteorológica) y, para la
+- Para el modo automático: acceso a Internet (precios y previsión meteorológica) y, para la
   protección por corte, que el equipo y la red sigan alimentados durante los cortes
   (salida de respaldo del inversor o SAI).
 
@@ -70,7 +70,7 @@ python3 -m venv .venv
 cp config.example.toml config.toml
 ```
 
-Edita `config.toml`: como mínimo `[logger] ip` y `serial` y, para el modo tormenta,
+Edita `config.toml`: como mínimo `[logger] ip` y `serial` y, para el modo automático,
 `[storm] latitude` y `longitude`. Consulta la
 [Referencia de configuración](#referencia-de-configuración).
 

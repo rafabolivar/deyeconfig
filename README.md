@@ -52,7 +52,7 @@ power outages.
     it a fixed IP with a DHCP reservation. You can also find it by looking for the
     device with TCP port 8899 open on your network.
 - Python 3.11 or later on a machine on the same network (a small Linux VM is enough).
-- For storm mode: Internet access (weather forecast) and, for outage protection, the
+- For the automatic mode: Internet access (prices and weather forecast) and, for outage protection, the
   machine and network equipment powered during outages (inverter backup output or UPS).
 
 ## Installation
@@ -65,7 +65,7 @@ python3 -m venv .venv
 cp config.example.toml config.toml
 ```
 
-Edit `config.toml`: at least `[logger] ip` and `serial`, and for storm mode
+Edit `config.toml`: at least `[logger] ip` and `serial`, and for the automatic mode
 `[storm] latitude` and `longitude`. See the [Configuration reference](#configuration-reference).
 
 Then check the connection:
