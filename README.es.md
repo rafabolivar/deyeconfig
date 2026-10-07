@@ -266,7 +266,9 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
   1. Lee el SOC, la capacidad y la tensión de la batería.
   2. Obtiene los precios PVPC de hoy y de mañana (los de mañana se publican hacia
      las 20:15; hasta entonces se usan los del día anterior como estimación, y los
-     precios de respaldo de `[tariff]` si no hay nada más) y, en una sola consulta a
+     precios de respaldo de `[tariff]` si no hay nada más; los precios que faltan o no
+     son válidos se vuelven a pedir en cada ciclo, y si a las `price_warning_hour`
+     siguen faltando los de mañana se registra un aviso) y, en una sola consulta a
      Open-Meteo, la previsión solar sobre el plano de las placas y la de tormentas.
   3. **Protección contra tormentas**: compara varios modelos meteorológicos para
      valorar cada hora de tormenta (ver [Confirmación de tormentas](#confirmación-de-tormentas)).
@@ -461,6 +463,7 @@ Solo como respaldo, cuando no hay precios PVPC reales disponibles.
 | `charge_control_minutes` | 10 | Minutos mínimos entre cambios de la corriente de carga desde red |
 | `late_charge_preference` | 0.0001 | Preferencia (€/kWh por hora) por cargar más tarde a igual precio |
 | `pv_correction_min_hours` | 2 | Horas de sol medidas necesarias para corregir la previsión del día |
+| `price_warning_hour` | 23 | Hora a partir de la cual se registra un aviso si faltan los precios de mañana |
 | `load_profile` | unos 12,7 kWh/día | Consumo previsto (kW) de cada hora, de 00 a 23 |
 
 La ubicación y la zona horaria se toman de `[storm]` si no se indican en `[optimizer]`.

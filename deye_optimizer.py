@@ -98,6 +98,7 @@ OPTIMIZER_DEFAULTS = {
     "charge_control_minutes": 10,
     "late_charge_preference": 0.0001,
     "pv_correction_min_hours": 2,
+    "price_warning_hour": 23,
     "load_profile": DEFAULT_LOAD_PROFILE,
 }
 STORM_DEFAULTS = {
@@ -191,8 +192,10 @@ def valid_day(prices: dict[str, float]) -> bool:
 
 
 class PriceCache:
-    def __init__(self, tz, tariff: Tariff, fallback: dict):
+    def __init__(self, tz, tariff: Tariff, fallback: dict, warning_hour: int = 23):
         self.tz, self.tariff, self.fallback = tz, tariff, fallback
+        self.warning_hour = warning_hour
+        self.warned: set[str] = set()  # days already warned about
         self.prices: dict[str, float] = json.loads(PRICE_CACHE.read_text()) if PRICE_CACHE.exists() else {}
 
     def day(self, d: date) -> dict[str, float]:
@@ -221,6 +224,12 @@ class PriceCache:
                 else:
                     log(f"Prices for {d} not valid yet (REData returned {len(fetched)} values, "
                         f"min {min(fetched.values(), default=0):.3f}); using estimates.")
+        # Traceability: warn once if tomorrow's prices are still missing late in the evening
+        tomorrow = now.date() + timedelta(days=1)
+        if now.hour >= self.warning_hour and not self.has_day(tomorrow) and tomorrow.isoformat() not in self.warned:
+            log(f"WARNING: PVPC prices for {tomorrow} still not available at {now:%H:%M}; "
+                f"the plan uses estimates (previous day / tariff) until they arrive.")
+            self.warned.add(tomorrow.isoformat())
         if changed:
             cutoff = (now.date() - timedelta(days=7)).isoformat()
             self.prices = {k: v for k, v in self.prices.items() if k >= cutoff}
@@ -458,7 +467,7 @@ class Optimizer:
         self.s, self.st, self.tariff = s, st, tariff
         self.conf, self.regmap, self.map_path, self.apply = conf, regmap, map_path, apply
         self.assume_storm, self.assume_outage = assume_storm, assume_outage
-        self.prices = PriceCache(s["tz"], tariff, fallback)
+        self.prices = PriceCache(s["tz"], tariff, fallback, s["price_warning_hour"])
         self.state = load_state()
         self.last_slots = None
         self.plan_hours: list[dict] = []          # hours of the last plan (corrected solar, load)

@@ -150,6 +150,10 @@ late_charge_preference = 0.0001
 # this many daylight hours have been measured.
 pv_correction_min_hours = 2
 
+# If tomorrow's PVPC prices are still not available at this hour, a warning is
+# logged (the plan uses estimates until they arrive).
+price_warning_hour = 23
+
 # Expected consumption (kW) for each hour of the day, 00 to 23.
 load_profile = [0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36,
                 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,

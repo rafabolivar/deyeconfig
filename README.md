@@ -255,7 +255,9 @@ come from REData, Red Eléctrica's public API (no key needed).
   1. Reads the SOC, battery capacity and voltage.
   2. Gets the PVPC prices for today and tomorrow (tomorrow's are published around
      20:15; until then the previous day's prices are used as an estimate, and the
-     `[tariff]` fallback prices if there is nothing else) and, in one Open-Meteo
+     `[tariff]` fallback prices if there is nothing else; missing or invalid prices
+     are requested again in every cycle, and a warning is logged if tomorrow's are
+     still missing at `price_warning_hour`) and, in one Open-Meteo
      call, the solar forecast on the plane of the panels and the storm forecast.
   3. **Storm protection**: compares several weather models to rate each storm hour
      (see [Storm confirmation](#storm-confirmation)). From `reserve_lead_hours`
@@ -444,6 +446,7 @@ Fallback only, used when the real PVPC prices are not available.
 | `charge_control_minutes` | 10 | Minimum minutes between grid charge current changes |
 | `late_charge_preference` | 0.0001 | Preference (EUR/kWh per hour) for charging later at equal price |
 | `pv_correction_min_hours` | 2 | Measured daylight hours needed to correct today's solar forecast |
+| `price_warning_hour` | 23 | Hour from which a warning is logged if tomorrow's prices are still missing |
 | `load_profile` | about 12.7 kWh/day | Expected consumption (kW) for each hour, 00 to 23 |
 
 Location and time zone are taken from `[storm]` unless set in `[optimizer]`.
