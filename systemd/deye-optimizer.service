@@ -1,0 +1,26 @@
+# deyeconfig price optimizer: plans grid charging from real PVPC prices, the
+# solar forecast and the expected consumption.
+# By default it runs in dry run (simulation) mode: it logs the plan without
+# writing to the inverter. Add --apply to ExecStart to let it write.
+# Adjust User and the paths if you installed deyeconfig elsewhere, then:
+#   sudo cp systemd/deye-optimizer.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now deye-optimizer.service
+# Logs: journalctl -u deye-optimizer.service -f
+
+[Unit]
+Description=deyeconfig price optimizer
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/deye
+ExecStart=/home/ubuntu/deye/.venv/bin/python /home/ubuntu/deye/deye_optimizer.py --daemon
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

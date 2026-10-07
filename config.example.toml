@@ -107,3 +107,44 @@ weekend_off_peak = true
 # Default: Spanish national holidays with a fixed date (regional and local
 # holidays do not count in 2.0TD).
 holidays = ["01-01", "01-06", "05-01", "08-15", "10-12", "11-01", "12-06", "12-08", "12-25"]
+
+[optimizer]
+# Price optimizer (deye_optimizer.py): plans grid charging from the real hourly
+# PVPC prices (REData), the solar forecast and the expected consumption.
+# Location and time zone are taken from [storm] unless set here.
+
+# Seconds between plans.
+interval = 900
+
+# Solar installation: peak power (kWp), measured performance factor (actual
+# production / theoretical from the irradiance on the panels), tilt (degrees)
+# and azimuth (0 = south, -90 = east, 90 = west).
+pv_kwp = 3.535
+pv_performance = 0.54
+panel_tilt = 35
+panel_azimuth = -45
+
+# Battery levels (%) and efficiencies.
+min_soc = 15
+max_soc = 100
+battery_nominal_voltage = 51.2
+charge_efficiency = 0.95
+discharge_efficiency = 0.95
+
+# Battery wear cost per kWh discharged (EUR) and price paid for exported energy (EUR/kWh).
+cycle_cost = 0.01
+export_price = 0.04
+
+# Limits: grid draw (W, inverter peak shaving) and currents (A).
+grid_power_limit = 4000
+max_grid_charge_current = 65
+max_charge_current = 90
+max_discharge_current = 95
+
+# Hours ahead to plan (limited by the published prices).
+horizon_hours = 36
+
+# Expected consumption (kW) for each hour of the day, 00 to 23.
+load_profile = [0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36,
+                0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                0.9, 0.9, 0.9, 0.9, 0.6, 0.6]

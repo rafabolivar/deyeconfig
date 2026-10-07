@@ -18,6 +18,7 @@ when thunderstorms are forecast, so the house is ready for a power outage.
 - [Profiles](#profiles)
 - [Exporting the current configuration](#exporting-the-current-configuration)
 - [Storm mode](#storm-mode)
+- [Price optimizer (dry run)](#price-optimizer-dry-run)
 - [Configuration reference](#configuration-reference)
 - [Backups, state and rolling back](#backups-state-and-rolling-back)
 - [Register maps](#register-maps)
@@ -81,13 +82,14 @@ deye_read_config.py       Show the full configuration and save a backup (read-on
 deye_apply.py             Apply a profile (dry run unless --apply)
 deye_export.py            Export the current configuration as a profile (read-only)
 deye_storm.py             Storm mode (single check or service)
+deye_optimizer.py         Price optimizer: plans charging from real PVPC prices (dry run by default)
 deye_common.py            Shared: configuration loading, connection, register reads
 deye_map.py               Shared: register map handling and value conversions
 deye_tariff.py            Shared: tariff periods (off-peak, mid, peak), weekends and holidays
 maps/                     Register maps per inverter model (TOML)
-profiles/examples/        Example profiles (autumn, winter, summer)
+profiles/examples/        Example profiles (afternoon, autumn, winter, summer)
 profiles/                 Your own profiles (ignored by git)
-systemd/                  systemd unit for the storm mode service
+systemd/                  systemd units for the storm mode and price optimizer services
 config.example.toml       Configuration template
 config.toml               Your configuration (ignored by git)
 backups/                  JSON backups of the inverter registers (ignored by git)
@@ -359,6 +361,45 @@ or a reboot. After changing `config.toml`, restart the service.
 network equipment must stay powered during an outage (e.g. connected to the
 inverter's backup output or a UPS). The logger is powered by the inverter.
 
+## Price optimizer (dry run)
+
+`deye_optimizer.py` plans grid charging from the **real hourly PVPC prices**
+(REData, Red Eléctrica's public API, no key needed), the solar forecast on the
+plane of the panels (Open-Meteo), the expected consumption and the battery SOC.
+The fixed tariff periods do not reflect the real price: in September-October 2026
+the cheapest 3 hours were at midday or in the afternoon on 27 of 31 days (about
+0.06 EUR/kWh at 14-17 h, versus 0.18 at night and 0.33 at 19-21 h), because solar
+generation lowers the market price.
+
+Every `interval` seconds (900) it:
+
+1. Reads the SOC, battery capacity and voltage.
+2. Gets the PVPC prices for today and tomorrow (tomorrow's are published around
+   20:15; until then the previous day's prices are used as an estimate), the solar
+   forecast (irradiance x `pv_kwp` x `pv_performance`) and the consumption profile.
+3. Simulates the battery hour by hour and searches for the hours to **charge** from
+   the grid and the hours to **keep** the battery (the house uses the grid while it
+   is cheap) that minimise the total cost, including battery losses, a wear cost per
+   kWh and the value of the energy left at the end. Solar charging comes first; the
+   grid only completes what is worth buying.
+4. Builds the 6 Time Of Use slots and the grid charge current.
+5. Logs the plan, the expected cost versus doing nothing and the changes it would
+   make. With `--apply` it writes them (never while storm mode is active or the grid
+   is down).
+
+```bash
+.venv/bin/python deye_optimizer.py                   # single plan, dry run
+.venv/bin/python deye_optimizer.py --daemon          # service, dry run (simulation)
+.venv/bin/python deye_optimizer.py --daemon --apply  # service, writes to the inverter
+```
+
+The latest plan is saved in `state/optimizer_plan.json` and every plan is logged in
+`state/optimizer_log.csv`, to compare its decisions with reality before letting it
+write. The service unit `systemd/deye-optimizer.service` runs it in dry run mode.
+
+Status: first version, running in dry run mode. The consumption profile is a fixed
+configuration value for now; learning it from the inverter history is planned.
+
 ## Configuration reference
 
 `config.toml` (copy of `config.example.toml`, never committed):
@@ -420,6 +461,26 @@ inverter's backup output or a UPS). The logger is powered by the inverter.
 Default 2.0TD periods on weekdays: 00-08 off-peak (valle), 08-10 mid (llano),
 10-14 peak (punta), 14-18 mid, 18-22 peak, 22-24 mid. In 2.0TD only national
 holidays count as off-peak, not regional or local ones.
+
+### `[optimizer]`
+
+| Key | Default | Description |
+|---|---|---|
+| `interval` | 900 | Seconds between plans |
+| `pv_kwp` | 3.535 | Solar peak power (kWp) |
+| `pv_performance` | 0.54 | Actual production / theoretical from the irradiance on the panels |
+| `panel_tilt`, `panel_azimuth` | 35, -45 | Panel tilt (degrees) and azimuth (0 = south, -90 = east) |
+| `min_soc`, `max_soc` | 15, 100 | Battery range used by the plan (%) |
+| `charge_efficiency`, `discharge_efficiency` | 0.95, 0.95 | Battery efficiencies |
+| `cycle_cost` | 0.01 | Battery wear cost per kWh discharged (EUR) |
+| `export_price` | 0.04 | Price paid for exported energy (EUR/kWh) |
+| `grid_power_limit` | 4000 | Maximum grid draw (W, inverter peak shaving) |
+| `max_grid_charge_current` | 65 | Maximum grid charge current (A) |
+| `max_charge_current`, `max_discharge_current` | 90, 95 | Battery current limits (A) |
+| `horizon_hours` | 36 | Hours ahead to plan (limited by the published prices) |
+| `load_profile` | about 12.7 kWh/day | Expected consumption (kW) for each hour, 00 to 23 |
+
+Location and time zone are taken from `[storm]` unless set in `[optimizer]`.
 
 ## Backups, state and rolling back
 

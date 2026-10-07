@@ -18,6 +18,7 @@ previsión de tormentas, para que la casa esté preparada ante un corte de luz.
 - [Perfiles](#perfiles)
 - [Exportar la configuración actual](#exportar-la-configuración-actual)
 - [Modo tormenta](#modo-tormenta)
+- [Optimizador por precios (simulación)](#optimizador-por-precios-simulación)
 - [Referencia de configuración](#referencia-de-configuración)
 - [Copias de seguridad, estado y cómo volver atrás](#copias-de-seguridad-estado-y-cómo-volver-atrás)
 - [Mapas de registros](#mapas-de-registros)
@@ -88,13 +89,14 @@ deye_read_config.py       Muestra toda la configuración y guarda una copia (sol
 deye_apply.py             Aplica un perfil (simulación salvo con --apply)
 deye_export.py            Exporta la configuración actual como perfil (solo lectura)
 deye_storm.py             Modo tormenta (comprobación única o servicio)
+deye_optimizer.py         Optimizador por precios: planifica la carga con los precios PVPC reales (simulación por defecto)
 deye_common.py            Común: carga de configuración, conexión, lectura de registros
 deye_map.py               Común: gestión del mapa de registros y conversión de valores
 deye_tariff.py            Común: periodos de la tarifa (valle, llano, punta), fines de semana y festivos
 maps/                     Mapas de registros por modelo de inversor (TOML)
-profiles/examples/        Perfiles de ejemplo (autumn, winter, summer)
+profiles/examples/        Perfiles de ejemplo (afternoon, autumn, winter, summer)
 profiles/                 Tus perfiles (ignorados por git)
-systemd/                  Unidad systemd del servicio de modo tormenta
+systemd/                  Unidades systemd de los servicios de modo tormenta y optimizador
 config.example.toml       Plantilla de configuración
 config.toml               Tu configuración (ignorada por git)
 backups/                  Copias JSON de los registros del inversor (ignoradas por git)
@@ -376,6 +378,46 @@ servicio.
 red tienen que seguir alimentados durante un corte (por ejemplo, conectados a la
 salida de respaldo del inversor o a un SAI). El logger se alimenta del propio inversor.
 
+## Optimizador por precios (simulación)
+
+`deye_optimizer.py` planifica la carga desde red con los **precios PVPC reales de
+cada hora** (REData, la API pública de Red Eléctrica, sin clave), la previsión solar
+sobre el plano de las placas (Open-Meteo), el consumo previsto y el SOC de la
+batería. Los periodos fijos de la tarifa no reflejan el precio real: en
+septiembre-octubre de 2026 las 3 horas más baratas cayeron a mediodía o por la tarde
+en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noche y 0,33 de 19
+a 21 h), porque la generación solar abarata el mercado.
+
+Cada `interval` segundos (900):
+
+1. Lee el SOC, la capacidad y la tensión de la batería.
+2. Obtiene los precios PVPC de hoy y de mañana (los de mañana se publican hacia las
+   20:15; hasta entonces se usan los del día anterior como estimación), la previsión
+   solar (radiación x `pv_kwp` x `pv_performance`) y el perfil de consumo.
+3. Simula la batería hora a hora y busca las horas en las que **cargar** desde la red
+   y las horas en las que **reservar** la batería (la casa usa la red mientras está
+   barata) que minimizan el coste total, teniendo en cuenta las pérdidas de la
+   batería, un coste de desgaste por kWh y el valor de la energía que queda al final.
+   El sol carga primero; la red solo completa lo que compensa comprar.
+4. Construye las 6 franjas Time Of Use y la corriente de carga desde red.
+5. Registra el plan, el coste previsto frente a no hacer nada y los cambios que
+   haría. Con `--apply` los escribe (nunca con el modo tormenta activo ni sin red).
+
+```bash
+.venv/bin/python deye_optimizer.py                   # plan único, simulación
+.venv/bin/python deye_optimizer.py --daemon          # servicio, simulación
+.venv/bin/python deye_optimizer.py --daemon --apply  # servicio, escribe en el inversor
+```
+
+El último plan se guarda en `state/optimizer_plan.json` y cada plan queda registrado
+en `state/optimizer_log.csv`, para comparar sus decisiones con la realidad antes de
+dejarle escribir. La unidad `systemd/deye-optimizer.service` lo ejecuta en modo
+simulación.
+
+Estado: primera versión, funcionando en modo simulación. El perfil de consumo es por
+ahora un valor fijo de la configuración; está previsto aprenderlo del historial del
+inversor.
+
 ## Referencia de configuración
 
 `config.toml` (copia de `config.example.toml`, nunca se sube al repositorio):
@@ -438,6 +480,26 @@ Periodos 2.0TD por defecto en días laborables: 00-08 valle (`off-peak`), 08-10
 llano (`mid`), 10-14 punta (`peak`), 14-18 llano, 18-22 punta, 22-24 llano. En la
 2.0TD solo cuentan como valle los festivos nacionales, no los autonómicos ni los
 locales.
+
+### `[optimizer]`
+
+| Clave | Por defecto | Descripción |
+|---|---|---|
+| `interval` | 900 | Segundos entre planes |
+| `pv_kwp` | 3.535 | Potencia pico de las placas (kWp) |
+| `pv_performance` | 0.54 | Producción real / teórica según la radiación sobre las placas |
+| `panel_tilt`, `panel_azimuth` | 35, -45 | Inclinación (grados) y orientación (0 = sur, -90 = este) |
+| `min_soc`, `max_soc` | 15, 100 | Rango de batería que usa el plan (%) |
+| `charge_efficiency`, `discharge_efficiency` | 0.95, 0.95 | Eficiencias de la batería |
+| `cycle_cost` | 0.01 | Coste de desgaste de la batería por kWh descargado (€) |
+| `export_price` | 0.04 | Precio cobrado por la energía exportada (€/kWh) |
+| `grid_power_limit` | 4000 | Consumo máximo de red (W, *peak shaving* del inversor) |
+| `max_grid_charge_current` | 65 | Corriente máxima de carga desde red (A) |
+| `max_charge_current`, `max_discharge_current` | 90, 95 | Límites de corriente de la batería (A) |
+| `horizon_hours` | 36 | Horas que planifica (limitadas por los precios publicados) |
+| `load_profile` | unos 12,7 kWh/día | Consumo previsto (kW) de cada hora, de 00 a 23 |
+
+La ubicación y la zona horaria se toman de `[storm]` si no se indican en `[optimizer]`.
 
 ## Copias de seguridad, estado y cómo volver atrás
 

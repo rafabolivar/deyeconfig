@@ -1,0 +1,60 @@
+# EXAMPLE profile: grid charge in the afternoon (14:00-17:00).
+# In September-October 2026 the cheapest 3 hours of the day (PVPC) were 14:00-17:00
+# on 21 of 31 days (about 0.06 EUR/kWh, versus 0.18 at night and 0.33 at 19-21 h),
+# because solar generation lowers the market price at midday.
+# The battery is charged in that window (solar first, the grid completes it) and
+# used for the evening peak, the night and the early morning.
+# Interim profile until the price-based planner decides the windows every day.
+
+description = "Afternoon: grid charge at 14:00-17:00 (cheapest PVPC hours) up to 100 %"
+
+[parameters]
+grid_charge = true
+grid_charge_current = 65            # A, ~3.4 kW: fills the battery within the 3 h window
+max_charge_current = 90             # A, below the BMS limit (100 A, 3 s delay)
+max_discharge_current = 95          # A, below the BMS limit (100 A, 30 s delay)
+time_of_use = "MTWTFSS"
+grid_peak_shaving = true            # limit grid draw below the contracted power
+grid_peak_shaving_power = 4000      # W
+
+[[tou]]
+slot = 1
+time = "00:00"
+power = 6000
+soc = 15
+grid_charge = false
+
+[[tou]]
+slot = 2
+time = "08:00"
+power = 6000
+soc = 15
+grid_charge = false
+
+[[tou]]
+slot = 3
+time = "10:00"
+power = 6000
+soc = 15
+grid_charge = false
+
+[[tou]]
+slot = 4
+time = "14:00"
+power = 6000
+soc = 100
+grid_charge = true
+
+[[tou]]
+slot = 5
+time = "17:00"
+power = 6000
+soc = 15
+grid_charge = false
+
+[[tou]]
+slot = 6
+time = "22:00"
+power = 6000
+soc = 15
+grid_charge = false
