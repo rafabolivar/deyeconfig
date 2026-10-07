@@ -193,7 +193,7 @@ Examples for sunny days in autumn and winter (`profiles/examples/autumn.toml` an
 
 | Slot | Start | Period | SOC | Grid charge | Effect |
 |---|---|---|---|---|---|
-| 1 | 00:00 | Off-peak | 50 % autumn / 60 % winter | Yes | Charge at off-peak price; the battery does not go below this level at night |
+| 1 | 00:00 | Off-peak | 60 % autumn / 70 % winter | Yes | Charge at off-peak price; the battery does not go below this level at night |
 | 2 | 08:00 | Mid | 15 % | No | Battery available to start the day |
 | 3 | 10:00 | Peak | 15 % | No | Battery available; the sun charges it |
 | 4 | 14:00 | Mid | 15 % | No | Battery available |
@@ -205,7 +205,7 @@ Examples for sunny days in autumn and winter (`profiles/examples/autumn.toml` an
   charging more would fill the battery with grid energy and the surplus would be
   exported at a low price. Autumn has more sun, so it charges less.
 - At night the house uses cheap off-peak grid energy instead of the battery.
-- Gentle grid charge at 25 A (about 3.5 h), and grid draw limited to 4000 W
+- Gentle grid charge at 25 A (about 4-4.5 h from 15 %), and grid draw limited to 4000 W
   (peak shaving) to stay below the contracted power.
 - The storm mode service is compatible with these profiles: it saves the
   configuration when it starts and restores it when it ends.

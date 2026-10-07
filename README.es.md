@@ -202,7 +202,7 @@ Ejemplos para días de sol en otoño e invierno (`profiles/examples/autumn.toml`
 
 | Franja | Inicio | Periodo | SOC | Carga desde red | Efecto |
 |---|---|---|---|---|---|
-| 1 | 00:00 | Valle | 50 % otoño / 60 % invierno | Sí | Carga a precio valle; por la noche la batería no baja de ese nivel |
+| 1 | 00:00 | Valle | 60 % otoño / 70 % invierno | Sí | Carga a precio valle; por la noche la batería no baja de ese nivel |
 | 2 | 08:00 | Llano | 15 % | No | Batería disponible para empezar el día |
 | 3 | 10:00 | Punta | 15 % | No | Batería disponible; el sol la va cargando |
 | 4 | 14:00 | Llano | 15 % | No | Batería disponible |
@@ -214,7 +214,7 @@ Ejemplos para días de sol en otoño e invierno (`profiles/examples/autumn.toml`
   cargar más llenaría la batería con energía de la red y el excedente se
   exportaría a precio bajo. En otoño hay más sol, así que carga menos.
 - Por la noche la casa usa la energía barata de la red en lugar de la batería.
-- Carga suave a 25 A (unas 3,5 horas) y consumo de red limitado a 4000 W
+- Carga suave a 25 A (unas 4-4,5 horas desde el 15 %) y consumo de red limitado a 4000 W
   (*peak shaving*) para no superar la potencia contratada.
 - El servicio de modo tormenta es compatible con estos perfiles: guarda la
   configuración al activarse y la restaura al terminar.
