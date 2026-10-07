@@ -216,6 +216,11 @@ Ejemplos para días de sol en otoño e invierno (`profiles/examples/autumn.toml`
 - Por la noche la casa usa la energía barata de la red en lugar de la batería.
 - Carga suave a 25 A (unas 4-4,5 horas desde el 15 %) y consumo de red limitado a 4000 W
   (*peak shaving*) para no superar la potencia contratada.
+- Límites de corriente de la batería por debajo de los umbrales de protección del
+  BMS (100 A durante 3 s en carga, 100 A durante 30 s en descarga): 90 A de carga y
+  95 A de descarga. Por encima del umbral del BMS la batería se desconectaría, y
+  durante un corte dejaría la casa sin luz. Comprueba los valores de tu propio BMS
+  antes de copiarlos.
 - El servicio de modo tormenta es compatible con estos perfiles: guarda la
   configuración al activarse y la restaura al terminar.
 

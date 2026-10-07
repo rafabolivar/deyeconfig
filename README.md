@@ -207,6 +207,10 @@ Examples for sunny days in autumn and winter (`profiles/examples/autumn.toml` an
 - At night the house uses cheap off-peak grid energy instead of the battery.
 - Gentle grid charge at 25 A (about 4-4.5 h from 15 %), and grid draw limited to 4000 W
   (peak shaving) to stay below the contracted power.
+- Battery current limits below the BMS protection thresholds (100 A for 3 s when
+  charging, 100 A for 30 s when discharging): 90 A charge, 95 A discharge. Above the
+  BMS threshold the battery would disconnect, which during an outage would leave the
+  house without power. Check your own BMS values before copying them.
 - The storm mode service is compatible with these profiles: it saves the
   configuration when it starts and restores it when it ends.
 

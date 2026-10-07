@@ -16,6 +16,8 @@ description = "Winter (sunny days): off-peak grid charge up to 70 %"
 [parameters]
 grid_charge = true
 grid_charge_current = 25            # A, gentle charge: ~4.5 h from 15 % to 70 %
+max_charge_current = 90             # A, below the BMS limit (100 A, 3 s delay)
+max_discharge_current = 95          # A, below the BMS limit (100 A, 30 s delay): no BMS cut-off during outages
 time_of_use = "MTWTFSS"
 grid_peak_shaving = true            # limit grid draw below the contracted power
 grid_peak_shaving_power = 4000      # W
