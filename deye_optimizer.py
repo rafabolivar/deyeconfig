@@ -347,7 +347,8 @@ class Model:
                   + [(0, 0 if t in no_discharge else min(dd, self.max_discharge_kw * f))
                      for t, (dd, f) in enumerate(zip(deficit, frac))]
                   + [(0, min(ss, self.max_charge_kw * f)) for ss, f in zip(surplus, frac)]
-                  + [(self.min, self.max)] * n + [(0, None)] * n)
+                  # if the battery is already above max_soc (e.g. charged by the sun), allow it
+                  + [(self.min, max(self.max, soc0))] * n + [(0, None)] * n)
         res = linprog(cost, A_ub=np.array(A_ub), b_ub=b_ub, A_eq=np.array(A_eq), b_eq=b_eq,
                       bounds=bounds, method="highs")
         if not res.success:
