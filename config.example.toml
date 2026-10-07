@@ -43,15 +43,29 @@ enabled = true
 # Seconds between grid checks (outage detection).
 grid_check_interval = 60
 
-# What counts as a storm: weather codes (WMO 95, 96, 99 = thunderstorm) and heavy
-# rain in mm/h with a minimum probability (%).
+# Weather models compared to confirm a storm (Open-Meteo model names).
+models = ["ecmwf_ifs025", "icon_seamless", "meteofrance_seamless", "gfs_seamless", "ukmo_seamless"]
+
+# Storm signals, looking one hour before and after each hour:
+#   thunderstorm  weather code in storm_codes (WMO 95, 96, 99)
+#   heavy rain    at least heavy_rain_mm in the hour
+#   CAPE          convective energy (J/kg), the "fuel" of thunderstorms
+# Confidence:
+#   high    min_models models agree on thunderstorm or on heavy rain, or a
+#           thunderstorm with CAPE >= cape_high          -> reserve_soc
+#   medium  one model with thunderstorm and CAPE >= cape_medium, or heavy rain
+#           in one model                                 -> reserve_soc_medium
+#   low     anything else (drizzle, weak showers)        -> no reserve
 storm_codes = [95, 96, 99]
 heavy_rain_mm = 10.0
-min_probability = 50
+min_models = 2
+cape_high = 1000
+cape_medium = 500
 
 # Reserve: minimum battery level (%) from reserve_lead_hours before each storm hour
 # until grace_hours after it.
 reserve_soc = 80
+reserve_soc_medium = 50
 reserve_lead_hours = 0.5
 grace_hours = 1
 

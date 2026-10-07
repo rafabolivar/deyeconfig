@@ -257,16 +257,18 @@ come from REData, Red Eléctrica's public API (no key needed).
      20:15; until then the previous day's prices are used as an estimate, and the
      `[tariff]` fallback prices if there is nothing else) and, in one Open-Meteo
      call, the solar forecast on the plane of the panels and the storm forecast.
-  3. **Storm protection**: from `reserve_lead_hours` (0.5) before each storm hour
-     until `grace_hours` (1) after it, the battery must stay at or above
-     `reserve_soc` (80 %). Being below it has a high cost in the calculation
+  3. **Storm protection**: compares several weather models to rate each storm hour
+     (see [Storm confirmation](#storm-confirmation)). From `reserve_lead_hours`
+     (0.5) before it until `grace_hours` (1) after it, the battery must stay at or
+     above `reserve_soc` (80 %, high confidence) or `reserve_soc_medium` (50 %,
+     medium confidence). Being below has a high cost in the calculation
      (`shortfall_penalty`), so the plan charges in the cheapest hours before the
      storm, and in peak hours only as much as needed if there is no other way.
-  4. Simulates the battery hour by hour and searches for the hours to **charge**
-     from the grid and the hours to **keep** the battery (the house uses the grid
-     while it is cheap) that minimise the total cost, including battery losses, a
-     wear cost per kWh and the value of the energy left at the end. Solar charging
-     comes first; the grid only completes what is worth buying.
+  4. Finds the optimal plan by **linear programming** (scipy, HiGHS): the hours to
+     **charge** from the grid and the hours to **keep** the battery (the house uses
+     the grid while it is cheap) that minimise the total cost, including battery
+     losses, a wear cost per kWh and the value of the energy left at the end.
+     Solar charging comes first; the grid only completes what is worth buying.
   5. Builds the 6 Time Of Use slots, the grid charge current (only what is needed,
      up to `max_grid_charge_current`) and writes them only if they differ from the
      inverter.
@@ -274,9 +276,21 @@ come from REData, Red Eléctrica's public API (no key needed).
   down, all slots are lowered to `outage_soc` (15 %) at once, so the whole battery
   is available. When the grid returns, the plan is recalculated immediately.
 
-What counts as a storm: weather codes in `storm_codes` (WMO 95, 96, 99 =
-thunderstorm) or rain of at least `heavy_rain_mm` (10 mm/h) with a probability of
-at least `min_probability` (50 %).
+### Storm confirmation
+
+A single weather model often predicts a "thunderstorm" for what turns out to be a
+weak shower. To avoid paying for false alarms, the service compares several models
+(`models`: ECMWF, ICON, Météo-France, GFS and UKMO) and looks, around each hour, at:
+
+- **thunderstorm**: weather code in `storm_codes` (WMO 95, 96, 99);
+- **heavy rain**: at least `heavy_rain_mm` (10 mm) in the hour;
+- **CAPE**: convective energy (J/kg), the "fuel" of thunderstorms.
+
+| Confidence | Condition | Reserve |
+|---|---|---|
+| High | `min_models` (2) models agree on thunderstorm or on heavy rain, or a thunderstorm with CAPE >= `cape_high` (1000) | `reserve_soc` (80 %) |
+| Medium | One model with thunderstorm and CAPE >= `cape_medium` (500), or heavy rain in one model | `reserve_soc_medium` (50 %) |
+| Low | Anything else (drizzle, weak showers) | None |
 
 ### Time Of Use slots
 
@@ -376,10 +390,13 @@ inverter's backup output or a UPS). The logger is powered by the inverter.
 | `timezone` | `Europe/Madrid` | Local time zone |
 | `enabled` | true | Storm protection on or off (price optimization always runs) |
 | `grid_check_interval` | 60 | Seconds between grid checks (outage detection) |
+| `models` | ECMWF, ICON, Météo-France, GFS, UKMO | Weather models compared to confirm a storm |
 | `storm_codes` | [95, 96, 99] | WMO weather codes considered a thunderstorm |
-| `heavy_rain_mm` | 10.0 | Rain considered very heavy (mm/h) |
-| `min_probability` | 50 | Minimum probability for heavy rain to count (%) |
-| `reserve_soc` | 80 | Minimum battery level around a storm (%) |
+| `heavy_rain_mm` | 10.0 | Rain considered very heavy (mm in one hour) |
+| `min_models` | 2 | Models that must agree for high confidence |
+| `cape_high`, `cape_medium` | 1000, 500 | CAPE (J/kg) for high / medium confidence with a single model |
+| `reserve_soc` | 80 | Minimum battery level around a high-confidence storm (%) |
+| `reserve_soc_medium` | 50 | Minimum battery level around a medium-confidence storm (%) |
 | `reserve_lead_hours` | 0.5 | The reserve applies from this many hours before each storm hour |
 | `grace_hours` | 1 | ... until this many hours after it |
 | `shortfall_penalty` | 2.0 | Cost (EUR per kWh and hour) of being below the reserve |

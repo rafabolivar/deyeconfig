@@ -268,16 +268,20 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
      las 20:15; hasta entonces se usan los del día anterior como estimación, y los
      precios de respaldo de `[tariff]` si no hay nada más) y, en una sola consulta a
      Open-Meteo, la previsión solar sobre el plano de las placas y la de tormentas.
-  3. **Protección contra tormentas**: desde `reserve_lead_hours` (0,5) antes de cada
-     hora de tormenta hasta `grace_hours` (1) después, la batería tiene que estar en
-     `reserve_soc` (80 %) o por encima. Quedarse por debajo tiene un coste alto en el
-     cálculo (`shortfall_penalty`), así que el plan carga en las horas más baratas
-     antes de la tormenta, y en punta solo lo justo si no queda otra.
-  4. Simula la batería hora a hora y busca las horas en las que **cargar** desde la
-     red y las horas en las que **reservar** la batería (la casa usa la red mientras
-     está barata) que minimizan el coste total, teniendo en cuenta las pérdidas de la
-     batería, un coste de desgaste por kWh y el valor de la energía que queda al
-     final. El sol carga primero; la red solo completa lo que compensa comprar.
+  3. **Protección contra tormentas**: compara varios modelos meteorológicos para
+     valorar cada hora de tormenta (ver [Confirmación de tormentas](#confirmación-de-tormentas)).
+     Desde `reserve_lead_hours` (0,5) antes hasta `grace_hours` (1) después, la
+     batería tiene que estar en `reserve_soc` (80 %, confianza alta) o
+     `reserve_soc_medium` (50 %, confianza media) o por encima. Quedarse por debajo
+     tiene un coste alto en el cálculo (`shortfall_penalty`), así que el plan carga en
+     las horas más baratas antes de la tormenta, y en punta solo lo justo si no queda
+     otra.
+  4. Encuentra el plan óptimo mediante **programación lineal** (scipy, HiGHS): las
+     horas en las que **cargar** desde la red y las horas en las que **reservar** la
+     batería (la casa usa la red mientras está barata) que minimizan el coste total,
+     teniendo en cuenta las pérdidas de la batería, un coste de desgaste por kWh y el
+     valor de la energía que queda al final. El sol carga primero; la red solo
+     completa lo que compensa comprar.
   5. Construye las 6 franjas Time Of Use y la corriente de carga desde red (solo la
      necesaria, hasta `max_grid_charge_current`) y las escribe solo si son distintas
      de las del inversor.
@@ -286,9 +290,21 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
   batería esté disponible. Cuando vuelve la red, el plan se recalcula
   inmediatamente.
 
-Qué cuenta como tormenta: los códigos meteorológicos de `storm_codes` (WMO 95, 96 y
-99 = tormenta) o lluvia de al menos `heavy_rain_mm` (10 mm/h) con una probabilidad
-de al menos `min_probability` (50 %).
+### Confirmación de tormentas
+
+Un solo modelo meteorológico a menudo prevé "tormenta" para lo que acaba siendo un
+chubasco débil. Para no pagar por falsas alarmas, el servicio compara varios modelos
+(`models`: ECMWF, ICON, Météo-France, GFS y UKMO) y mira, alrededor de cada hora:
+
+- **tormenta**: código meteorológico en `storm_codes` (WMO 95, 96 y 99);
+- **lluvia intensa**: al menos `heavy_rain_mm` (10 mm) en la hora;
+- **CAPE**: energía convectiva (J/kg), el "combustible" de las tormentas.
+
+| Confianza | Condición | Reserva |
+|---|---|---|
+| Alta | `min_models` (2) modelos coinciden en tormenta o en lluvia intensa, o una tormenta con CAPE >= `cape_high` (1000) | `reserve_soc` (80 %) |
+| Media | Un modelo con tormenta y CAPE >= `cape_medium` (500), o lluvia intensa en un modelo | `reserve_soc_medium` (50 %) |
+| Baja | Cualquier otra cosa (llovizna, chubascos débiles) | Ninguna |
 
 ### Franjas Time Of Use
 
@@ -390,10 +406,13 @@ salida de respaldo del inversor o a un SAI). El logger se alimenta del propio in
 | `timezone` | `Europe/Madrid` | Zona horaria local |
 | `enabled` | true | Activa o desactiva la protección contra tormentas (la optimización por precios funciona siempre) |
 | `grid_check_interval` | 60 | Segundos entre comprobaciones de la red (detección de cortes) |
+| `models` | ECMWF, ICON, Météo-France, GFS, UKMO | Modelos meteorológicos que se comparan para confirmar una tormenta |
 | `storm_codes` | [95, 96, 99] | Códigos meteorológicos WMO considerados tormenta |
-| `heavy_rain_mm` | 10.0 | Lluvia considerada muy intensa (mm/h) |
-| `min_probability` | 50 | Probabilidad mínima para que cuente la lluvia intensa (%) |
-| `reserve_soc` | 80 | Nivel mínimo de batería alrededor de una tormenta (%) |
+| `heavy_rain_mm` | 10.0 | Lluvia considerada muy intensa (mm en una hora) |
+| `min_models` | 2 | Modelos que deben coincidir para confianza alta |
+| `cape_high`, `cape_medium` | 1000, 500 | CAPE (J/kg) para confianza alta / media con un solo modelo |
+| `reserve_soc` | 80 | Nivel mínimo de batería alrededor de una tormenta de confianza alta (%) |
+| `reserve_soc_medium` | 50 | Nivel mínimo de batería alrededor de una tormenta de confianza media (%) |
 | `reserve_lead_hours` | 0.5 | La reserva se aplica desde estas horas antes de cada hora de tormenta |
 | `grace_hours` | 1 | ... hasta estas horas después |
 | `shortfall_penalty` | 2.0 | Coste (€ por kWh y hora) de estar por debajo de la reserva |
