@@ -28,71 +28,45 @@ timeout = 10
 map = "maps/deye_sg0xlp1.toml"
 
 [storm]
-# Storm mode service (deye_storm.py): when thunderstorms or very heavy rain are
-# forecast (Open-Meteo), keeps the battery charged for a possible power outage,
-# charging from the grid in the cheapest tariff periods (see [tariff]).
+# Storm protection, part of the automatic mode (deye_optimizer.py). When a
+# thunderstorm or very heavy rain is forecast (Open-Meteo), the battery is kept at
+# or above reserve_soc around the storm, charging in the cheapest hours before it.
 
-# Location for the weather forecast (decimal degrees) and its time zone.
+# Location for the forecasts (decimal degrees) and its time zone.
 latitude = 0.0
 longitude = 0.0
 timezone = "Europe/Madrid"
 
-# Seconds between weather forecast checks (also checked at every tariff period change).
-forecast_interval = 900
-# Seconds between grid / battery checks while in storm mode (outage detection).
+# Set to false to disable storm protection (price optimization still runs).
+enabled = true
+
+# Seconds between grid checks (outage detection).
 grid_check_interval = 60
 
-# Hours ahead to look for storms. In an off-peak period, a storm within this
-# window starts storm mode.
-forecast_hours = 24
-
-# Battery levels in storm mode (%):
-#   charge_soc  grid charge up to this level in off-peak periods
-#   hold_soc    minimum level kept until the storm has passed; mid periods only
-#               charge up to here, peak periods never charge
-#   outage_soc  level allowed while the grid is down
-charge_soc = 100
-hold_soc = 80
-outage_soc = 15
-
-# Backup, mid periods: if a storm is forecast, the SOC is below backup_trigger_soc
-# and there is no other cheap period (off-peak or mid) before the storm,
-# start storm mode now.
-backup_enabled = true
-backup_trigger_soc = 50
-
-# Emergency, peak periods: if a storm is happening or due within emergency_hours
-# and the SOC is below emergency_soc, charge up to emergency_soc.
-emergency_soc = 50
-emergency_hours = 2
-
-# Maximum power drawn from the grid in storm mode (W), using the inverter's grid
-# peak shaving, to stay below the contracted power. 0 = do not change it.
-grid_power_limit = 4000
-
-# Grid charge current in storm mode (A), to charge quickly even if your daily
-# profile uses a lower current. Restored when storm mode ends. 0 = do not change it.
-charge_current = 40
-
-# What counts as a storm: weather codes (WMO 95, 96, 99 = thunderstorm) and
-# heavy rain in mm/h with a minimum probability (%).
+# What counts as a storm: weather codes (WMO 95, 96, 99 = thunderstorm) and heavy
+# rain in mm/h with a minimum probability (%).
 storm_codes = [95, 96, 99]
 heavy_rain_mm = 10.0
 min_probability = 50
 
-# Restore the previous configuration this many hours after the last storm hour,
-# and in any case after max_hours in storm mode (safety limit).
+# Reserve: minimum battery level (%) from reserve_lead_hours before each storm hour
+# until grace_hours after it.
+reserve_soc = 80
+reserve_lead_hours = 0.5
 grace_hours = 1
-max_hours = 36
 
-# Safety limit of inverter writes per day.
-max_writes_per_day = 20
+# Cost (EUR per kWh and hour) of being below the reserve. High, so the plan always
+# tries to reach it: in the cheapest hours if possible, in peak hours only if needed.
+shortfall_penalty = 2.0
+
+# Battery level allowed while the grid is down (%): the whole battery is available.
+outage_soc = 15
 
 [tariff]
-# Electricity tariff periods, used by storm mode to charge in the cheapest hours.
-# Default: Spanish 2.0TD (valle = off-peak, llano = mid, punta = peak).
-# Weekday periods: ["HH:MM" start, "off-peak" | "mid" | "peak"], first at 00:00,
-# at most 6 (one per Time Of Use slot).
+# Fallback only: used when the real PVPC prices (REData) are not available.
+# Representative price (EUR/kWh) of each period.
+fallback_prices = { "off-peak" = 0.18, "mid" = 0.15, "peak" = 0.25 }
+# Tariff periods.
 periods = [
   ["00:00", "off-peak"],
   ["08:00", "mid"],
@@ -109,9 +83,9 @@ weekend_off_peak = true
 holidays = ["01-01", "01-06", "05-01", "08-15", "10-12", "11-01", "12-06", "12-08", "12-25"]
 
 [optimizer]
-# Price optimizer (deye_optimizer.py): plans grid charging from the real hourly
-# PVPC prices (REData), the solar forecast and the expected consumption.
-# Location and time zone are taken from [storm] unless set here.
+# Automatic mode (deye_optimizer.py): plans grid charging from the real hourly
+# PVPC prices (REData), the solar forecast and the expected consumption, with
+# the storm protection of [storm]. Location and time zone are taken from [storm].
 
 # Seconds between plans.
 interval = 900
@@ -141,8 +115,13 @@ max_grid_charge_current = 65
 max_charge_current = 90
 max_discharge_current = 95
 
-# Hours ahead to plan (limited by the published prices).
+# Hours ahead to plan.
 horizon_hours = 36
+
+# Slot SOC values are rounded up to this step (%), so small changes do not
+# rewrite the inverter, and safety limit of plan writes per day.
+soc_step = 5
+max_writes_per_day = 24
 
 # Expected consumption (kW) for each hour of the day, 00 to 23.
 load_profile = [0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36, 0.36,

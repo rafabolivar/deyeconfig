@@ -4,8 +4,8 @@
 
 Lee y modifica la configuración de inversores híbridos Deye a través del datalogger
 Solarman en tu red local (Modbus TCP, puerto 8899), sin depender de la nube. Incluye
-un servicio de modo tormenta que precarga la batería desde la red cuando hay
-previsión de tormentas, para que la casa esté preparada ante un corte de luz.
+un modo automático que carga la batería en las horas más baratas según los precios
+reales de la electricidad de cada hora y protege la casa ante tormentas y cortes de luz.
 
 ## Contenido
 
@@ -17,8 +17,7 @@ previsión de tormentas, para que la casa esté preparada ante un corte de luz.
 - [Leer la configuración del inversor](#leer-la-configuración-del-inversor)
 - [Perfiles](#perfiles)
 - [Exportar la configuración actual](#exportar-la-configuración-actual)
-- [Modo tormenta](#modo-tormenta)
-- [Optimizador por precios (simulación)](#optimizador-por-precios-simulación)
+- [Modo automático](#modo-automático)
 - [Referencia de configuración](#referencia-de-configuración)
 - [Copias de seguridad, estado y cómo volver atrás](#copias-de-seguridad-estado-y-cómo-volver-atrás)
 - [Mapas de registros](#mapas-de-registros)
@@ -38,9 +37,9 @@ previsión de tormentas, para que la casa esté preparada ante un corte de luz.
   en unidades normales. Cada escritura se valida, se respalda y se verifica.
 - **Exportación**: vuelca la configuración actual como perfil para guardarla o
   volver a ella.
-- **Servicio de modo tormenta**: cuando hay previsión de tormentas, carga la batería
-  desde la red en los periodos más baratos de la tarifa, mantiene una reserva durante
-  la tormenta y deja disponible toda la batería durante un corte.
+- **Modo automático**: planifica la carga desde red con los precios PVPC reales de
+  cada hora, la previsión solar y el consumo, mantiene una reserva cuando hay
+  previsión de tormentas y deja disponible toda la batería durante un corte.
 - **Seguro por defecto**: no se escribe nada sin `--apply`, los parámetros críticos
   son de solo lectura, y antes de cada escritura se hace una copia de seguridad y
   después se vuelve a leer para verificar.
@@ -88,19 +87,18 @@ deye_test_connection.py   Prueba de conexión (solo lectura)
 deye_read_config.py       Muestra toda la configuración y guarda una copia (solo lectura)
 deye_apply.py             Aplica un perfil (simulación salvo con --apply)
 deye_export.py            Exporta la configuración actual como perfil (solo lectura)
-deye_storm.py             Modo tormenta (comprobación única o servicio)
-deye_optimizer.py         Optimizador por precios: planifica la carga con los precios PVPC reales (simulación por defecto)
+deye_optimizer.py         Modo automático: optimizador por precios con protección ante tormentas y cortes
 deye_common.py            Común: carga de configuración, conexión, lectura de registros
 deye_map.py               Común: gestión del mapa de registros y conversión de valores
-deye_tariff.py            Común: periodos de la tarifa (valle, llano, punta), fines de semana y festivos
+deye_tariff.py            Común: periodos de la tarifa (precios de respaldo), fines de semana y festivos
 maps/                     Mapas de registros por modelo de inversor (TOML)
 profiles/examples/        Perfiles de ejemplo (afternoon, autumn, winter, summer)
 profiles/                 Tus perfiles (ignorados por git)
-systemd/                  Unidades systemd de los servicios de modo tormenta y optimizador
+systemd/                  Unidad systemd del servicio de modo automático
 config.example.toml       Plantilla de configuración
 config.toml               Tu configuración (ignorada por git)
 backups/                  Copias JSON de los registros del inversor (ignoradas por git)
-state/                    Estado del modo tormenta (ignorado por git)
+state/                    Estado del modo automático, caché de precios y planes (ignorado por git)
 ```
 
 ## Prueba de conexión
@@ -223,8 +221,9 @@ Ejemplos para días de sol en otoño e invierno (`profiles/examples/autumn.toml`
   95 A de descarga. Por encima del umbral del BMS la batería se desconectaría, y
   durante un corte dejaría la casa sin luz. Comprueba los valores de tu propio BMS
   antes de copiarlos.
-- El servicio de modo tormenta es compatible con estos perfiles: guarda la
-  configuración al activarse y la restaura al terminar.
+- Estos perfiles son para uso manual. Mientras el servicio de modo automático
+  funciona, él mismo gestiona las franjas Time Of Use y las sobrescribe en el
+  siguiente plan.
 
 `profiles/examples/summer.toml` es un ejemplo anterior sin carga desde red.
 
@@ -244,179 +243,119 @@ añade automáticamente si falta. Solo lectura.
 Buena práctica: exporta tu configuración antes de experimentar
 (`deye_export.py -o profiles/original.toml`) para poder volver siempre a ella.
 
-## Modo tormenta
+## Modo automático
 
-`deye_storm.py` es un servicio que mantiene la batería cargada cuando hay previsión
-de tormentas o lluvia muy intensa ([Open-Meteo](https://open-meteo.com/), gratuito,
-sin clave de API), para que la casa esté preparada ante un posible corte de luz.
-Carga desde la red en los periodos más baratos de la tarifa y nunca en punta,
-salvo en caso de emergencia.
+`deye_optimizer.py` es un servicio que gestiona la batería por sí solo: planifica la
+carga desde red con los **precios PVPC reales de cada hora**, la previsión solar, el
+consumo previsto y el SOC, protege la casa ante tormentas y cortes, y escribe las
+franjas Time Of Use en el inversor.
 
-Fuera del modo tormenta, el servicio solo consulta la previsión y nunca toca el
-inversor. Todos los valores se configuran en las secciones `[storm]` y `[tariff]`
-de `config.toml` (valores por defecto entre paréntesis).
+### Por qué precios reales
 
-### Cuándo se activa el modo tormenta
+Los periodos fijos de la tarifa (valle, llano y punta) solo determinan una parte del
+precio (peajes y cargos). El precio PVPC de cada hora incluye además el precio del
+mercado mayorista, que baja a mediodía por la generación solar. En
+septiembre-octubre de 2026 las 3 horas más baratas del día cayeron a mediodía o por
+la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noche y
+0,33 de 19 a 21 h). Los precios salen de REData, la API pública de Red Eléctrica
+(sin clave).
 
-1. **Periodo valle**: hay tormenta prevista en las próximas `forecast_hours` (24).
-   Es el caso principal: la batería se carga a precio valle, aunque la tormenta se
-   espere por la tarde.
-2. **Tormenta en curso** (la previsión para la hora actual cumple el criterio), a
-   cualquier hora.
-3. **Respaldo**, periodo llano: hay tormenta prevista, el SOC está por debajo de
-   `backup_trigger_soc` (50 %) y es el último periodo barato (valle o llano) antes
-   de la tormenta. Ejemplo: tormenta a las 21:00 en un día laborable; el modo
-   tormenta empieza a las 14:00 para aprovechar todo el llano de 14 a 18 antes de
-   la punta de 18 a 22.
-4. **Emergencia**, periodo punta: hay tormenta en curso o a menos de
-   `emergency_hours` (2) horas y el SOC está por debajo de `emergency_soc` (50 %).
+### Cómo funciona
 
-### Distribución de las franjas Time Of Use en modo tormenta
-
-Las 6 franjas Time Of Use siguen los periodos de la tarifa. Con la tarifa 2.0TD
-por defecto, en un día laborable:
-
-| Franja | Inicio | Periodo | SOC | Carga desde red | Efecto |
-|---|---|---|---|---|---|
-| 1 | 00:00 | Valle | 100 % | Sí | Carga al máximo con la energía más barata |
-| 2 | 08:00 | Llano | 80 % | Sí | Solo carga si la batería baja del 80 % |
-| 3 | 10:00 | Punta | 80 % | No | No carga nunca; la batería no baja del 80 % |
-| 4 | 14:00 | Llano | 80 % | Sí | Solo carga si baja del 80 % |
-| 5 | 18:00 | Punta | 80 % | No | No carga; mantiene la reserva |
-| 6 | 22:00 | Llano | 80 % | Sí | Solo carga si baja del 80 % |
-
-- `charge_soc` (100 %): nivel de carga en los periodos valle.
-- `hold_soc` (80 %): reserva que se mantiene hasta que pasa la tormenta. La batería
-  se puede usar del 100 % al 80 % por la mañana y en las horas punta, cuando la
-  energía de la red es más cara, mientras la reserva para el corte queda intacta.
-- **Fines de semana y festivos** son valle todo el día: todas las franjas cargan
-  hasta el 100 %. El inversor usa la misma tabla todos los días, así que el
-  servicio la reescribe cuando cambia el tipo de día (solo en modo tormenta).
-- **Carga de emergencia** en punta: las franjas de punta cargan hasta
-  `emergency_soc` (50 %) hasta que termina ese periodo punta. El resto se completa
-  en el siguiente llano o valle.
-- **Corriente de carga**: la corriente de carga desde red se fija en
-  `charge_current` (40 A) para cargar rápido, aunque tu perfil diario use una menor.
-- **Límite de potencia de red**: el *peak shaving* de red del inversor se fija en
-  `grid_power_limit` (4000 W) para que la carga de la batería y el consumo de la
-  casa juntos nunca superen la potencia contratada; el inversor recorta primero la
-  carga de la batería.
-- **Protección por corte**: el estado de la red se comprueba cada
-  `grid_check_interval` segundos (60). Si se va la red, todas las franjas bajan a
-  `outage_soc` (15 %) para que toda la batería esté disponible, haga lo que haga el
-  inversor con las franjas en modo isla. Cuando vuelve la red, se recupera la
-  distribución anterior.
-
-### Cuándo termina el modo tormenta
-
-Se restaura la configuración guardada al entrar en modo tormenta
-(`state/pre_storm.toml`):
-
-- `grace_hours` (1) después de la última hora de tormenta prevista, si no hay más
-  tormentas previstas;
-- si la tormenta deja de estar prevista (dos comprobaciones seguidas);
-- fuera de un periodo valle, si la siguiente tormenta llega después del siguiente
-  periodo valle (se gestionará entonces, cargando a precio valle);
-- tras `max_hours` (36), como límite de seguridad.
+- **Cada `interval` segundos (900), plan completo:**
+  1. Lee el SOC, la capacidad y la tensión de la batería.
+  2. Obtiene los precios PVPC de hoy y de mañana (los de mañana se publican hacia
+     las 20:15; hasta entonces se usan los del día anterior como estimación, y los
+     precios de respaldo de `[tariff]` si no hay nada más) y, en una sola consulta a
+     Open-Meteo, la previsión solar sobre el plano de las placas y la de tormentas.
+  3. **Protección contra tormentas**: desde `reserve_lead_hours` (0,5) antes de cada
+     hora de tormenta hasta `grace_hours` (1) después, la batería tiene que estar en
+     `reserve_soc` (80 %) o por encima. Quedarse por debajo tiene un coste alto en el
+     cálculo (`shortfall_penalty`), así que el plan carga en las horas más baratas
+     antes de la tormenta, y en punta solo lo justo si no queda otra.
+  4. Simula la batería hora a hora y busca las horas en las que **cargar** desde la
+     red y las horas en las que **reservar** la batería (la casa usa la red mientras
+     está barata) que minimizan el coste total, teniendo en cuenta las pérdidas de la
+     batería, un coste de desgaste por kWh y el valor de la energía que queda al
+     final. El sol carga primero; la red solo completa lo que compensa comprar.
+  5. Construye las 6 franjas Time Of Use y la corriente de carga desde red (solo la
+     necesaria, hasta `max_grid_charge_current`) y las escribe solo si son distintas
+     de las del inversor.
+- **Cada `grid_check_interval` segundos (60), protección por corte:** si se va la
+  red, todas las franjas bajan a `outage_soc` (15 %) en el acto, para que toda la
+  batería esté disponible. Cuando vuelve la red, el plan se recalcula
+  inmediatamente.
 
 Qué cuenta como tormenta: los códigos meteorológicos de `storm_codes` (WMO 95, 96 y
 99 = tormenta) o lluvia de al menos `heavy_rain_mm` (10 mm/h) con una probabilidad
 de al menos `min_probability` (50 %).
 
+### Franjas Time Of Use
+
+Cada hora del plan acaba con una de tres acciones:
+
+| Acción | Franja | Efecto |
+|---|---|---|
+| Cargar | Carga desde red activada, SOC = objetivo | El sol primero; la red completa hasta el objetivo |
+| Reservar | Sin carga desde red, SOC = nivel actual | La batería no se usa; la casa tira de la red mientras está barata |
+| Usar | Sin carga desde red, SOC = mínimo (15 %, o la reserva de tormenta) | La batería alimenta la casa |
+
+Las 24 horas se agrupan en las 6 franjas del inversor, uniendo las horas vecinas que
+menos estropean el plan (las horas de carga nunca se mueven). Ejemplo de plan en un
+día normal de octubre: cargar de 15:00 a 17:00 (las horas más baratas) hasta el
+100 %, y batería disponible el resto del día.
+
 ### Escrituras en el inversor
 
-En cada comprobación, el servicio compara la configuración deseada con la del
-inversor y solo escribe cuando hay que cambiar algo (normalmente al entrar en modo
-tormenta, en los cambios de periodo que lo requieran, al irse y volver la red y al
-terminar). Los registros se escriben en bloques contiguos (toda la tabla Time Of
-Use en una sola operación) y se vuelven a leer unos segundos después para
-verificarlos. Antes de cada escritura se guarda una copia en `backups/`, y hay un
-límite diario (`max_writes_per_day`, 20). Si el inversor cambia un valor por su
-cuenta, la siguiente comprobación lo corrige.
+Los SOC de las franjas se redondean hacia arriba a pasos de `soc_step` (5 %), así que
+los cambios pequeños del plan no reescriben el inversor. Los registros se escriben
+en bloques contiguos y se vuelven a leer para verificarlos, antes de cada escritura
+se guarda una copia en `backups/`, y hay un límite diario (`max_writes_per_day`, 24)
+que nunca se aplica a la protección por corte. Los límites de corriente de la
+batería (`max_charge_current`, 90 A; `max_discharge_current`, 95 A) y el límite de
+potencia de red (`grid_power_limit`, 4000 W, *peak shaving* del inversor) se
+escriben con cada plan.
 
 ### Ejecución
 
 ```bash
-.venv/bin/python deye_storm.py                    # comprobación única, muestra qué haría
-.venv/bin/python deye_storm.py --apply            # comprobación única, actúa sobre el inversor
-.venv/bin/python deye_storm.py --daemon --apply   # como servicio (lo usa systemd)
+.venv/bin/python deye_optimizer.py                    # plan único, simulación
+.venv/bin/python deye_optimizer.py --apply            # plan único, lo escribe
+.venv/bin/python deye_optimizer.py --daemon --apply   # servicio (lo usa systemd)
+.venv/bin/python deye_optimizer.py --assume-storm 6   # simulación con tormenta dentro de 6 h (prueba)
+.venv/bin/python deye_optimizer.py --assume-outage    # simulación sin red (prueba)
 ```
 
-Opciones de prueba (solo en una simulación única; no se escribe ni se guarda nada):
-
-```bash
-.venv/bin/python deye_storm.py --assume-storm 6                           # simula una tormenta dentro de 6 h
-.venv/bin/python deye_storm.py --assume-outage --assume-storm 0           # tormenta en curso y sin red
-.venv/bin/python deye_storm.py --at '2026-10-07 14:30' --assume-storm 6.5 # simula que son las 14:30
-```
+El último plan se guarda en `state/optimizer_plan.json` y cada plan queda registrado
+en `state/optimizer_log.csv`.
 
 ### Instalar el servicio
 
-Ajusta `User` y las rutas de `systemd/deye-storm.service` si hace falta y después:
+Ajusta `User` y las rutas de `systemd/deye-optimizer.service` si hace falta y después:
 
 ```bash
-sudo cp systemd/deye-storm.service /etc/systemd/system/
+sudo cp systemd/deye-optimizer.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now deye-storm.service
+sudo systemctl enable --now deye-optimizer.service
 ```
 
 Comandos útiles:
 
 ```bash
-systemctl status deye-storm.service                     # ¿está funcionando?
-journalctl -u deye-storm.service -f                     # sigue el registro en directo (Ctrl+C para salir)
-journalctl -u deye-storm.service --since today          # qué ha hecho hoy
-sudo systemctl restart deye-storm.service               # tras cambiar config.toml o el código
-sudo systemctl stop deye-storm.service                  # lo detiene (el estado se conserva)
+systemctl status deye-optimizer.service             # ¿está funcionando?
+journalctl -u deye-optimizer.service -f             # sigue el registro en directo (Ctrl+C para salir)
+journalctl -u deye-optimizer.service --since today  # qué ha hecho hoy
+sudo systemctl restart deye-optimizer.service       # tras cambiar config.toml o el código
+sudo systemctl stop deye-optimizer.service          # lo detiene (mandan los perfiles manuales)
 ```
 
-El estado se guarda en `state/`, así que el servicio continúa donde estaba tras un
-reinicio del servicio o de la máquina. Después de cambiar `config.toml`, reinicia el
-servicio.
+Mientras el servicio funciona, él gestiona las franjas Time Of Use, así que los
+perfiles aplicados a mano se sobrescriben en el siguiente plan. Para usar perfiles
+manuales, detén el servicio.
 
 **Requisito para la protección por corte:** el equipo que ejecuta el servicio y la
 red tienen que seguir alimentados durante un corte (por ejemplo, conectados a la
 salida de respaldo del inversor o a un SAI). El logger se alimenta del propio inversor.
-
-## Optimizador por precios (simulación)
-
-`deye_optimizer.py` planifica la carga desde red con los **precios PVPC reales de
-cada hora** (REData, la API pública de Red Eléctrica, sin clave), la previsión solar
-sobre el plano de las placas (Open-Meteo), el consumo previsto y el SOC de la
-batería. Los periodos fijos de la tarifa no reflejan el precio real: en
-septiembre-octubre de 2026 las 3 horas más baratas cayeron a mediodía o por la tarde
-en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noche y 0,33 de 19
-a 21 h), porque la generación solar abarata el mercado.
-
-Cada `interval` segundos (900):
-
-1. Lee el SOC, la capacidad y la tensión de la batería.
-2. Obtiene los precios PVPC de hoy y de mañana (los de mañana se publican hacia las
-   20:15; hasta entonces se usan los del día anterior como estimación), la previsión
-   solar (radiación x `pv_kwp` x `pv_performance`) y el perfil de consumo.
-3. Simula la batería hora a hora y busca las horas en las que **cargar** desde la red
-   y las horas en las que **reservar** la batería (la casa usa la red mientras está
-   barata) que minimizan el coste total, teniendo en cuenta las pérdidas de la
-   batería, un coste de desgaste por kWh y el valor de la energía que queda al final.
-   El sol carga primero; la red solo completa lo que compensa comprar.
-4. Construye las 6 franjas Time Of Use y la corriente de carga desde red.
-5. Registra el plan, el coste previsto frente a no hacer nada y los cambios que
-   haría. Con `--apply` los escribe (nunca con el modo tormenta activo ni sin red).
-
-```bash
-.venv/bin/python deye_optimizer.py                   # plan único, simulación
-.venv/bin/python deye_optimizer.py --daemon          # servicio, simulación
-.venv/bin/python deye_optimizer.py --daemon --apply  # servicio, escribe en el inversor
-```
-
-El último plan se guarda en `state/optimizer_plan.json` y cada plan queda registrado
-en `state/optimizer_log.csv`, para comparar sus decisiones con la realidad antes de
-dejarle escribir. La unidad `systemd/deye-optimizer.service` lo ejecuta en modo
-simulación.
-
-Estado: primera versión, funcionando en modo simulación. El perfil de consumo es por
-ahora un valor fijo de la configuración; está previsto aprenderlo del historial del
-inversor.
 
 ## Referencia de configuración
 
@@ -447,39 +386,29 @@ inversor.
 
 | Clave | Por defecto | Descripción |
 |---|---|---|
-| `latitude`, `longitude` | | Ubicación para la previsión (grados decimales) |
+| `latitude`, `longitude` | | Ubicación para las previsiones (grados decimales) |
 | `timezone` | `Europe/Madrid` | Zona horaria local |
-| `forecast_interval` | 900 | Segundos entre comprobaciones de la previsión (también en cada cambio de periodo) |
-| `grid_check_interval` | 60 | Segundos entre comprobaciones de la red en modo tormenta |
-| `forecast_hours` | 24 | Horas por delante en las que buscar tormentas |
-| `charge_soc` | 100 | Nivel de carga desde red en los periodos valle (%) |
-| `hold_soc` | 80 | Reserva que se mantiene en modo tormenta; en llano solo se carga hasta aquí (%) |
-| `outage_soc` | 15 | SOC mínimo mientras no hay red en modo tormenta (%) |
-| `backup_enabled` | true | Activa el respaldo en los periodos llano |
-| `backup_trigger_soc` | 50 | Respaldo: SOC por debajo de este valor (%) |
-| `emergency_soc` | 50 | Emergencia en punta: SOC por debajo de este valor; carga hasta él (%) |
-| `emergency_hours` | 2 | Emergencia: tormenta en curso o a menos de estas horas |
-| `grid_power_limit` | 4000 | Consumo máximo de red en modo tormenta (W, *peak shaving* del inversor); 0 = no cambiarlo |
-| `charge_current` | 40 | Corriente de carga desde red en modo tormenta (A); 0 = no cambiarla |
+| `enabled` | true | Activa o desactiva la protección contra tormentas (la optimización por precios funciona siempre) |
+| `grid_check_interval` | 60 | Segundos entre comprobaciones de la red (detección de cortes) |
 | `storm_codes` | [95, 96, 99] | Códigos meteorológicos WMO considerados tormenta |
 | `heavy_rain_mm` | 10.0 | Lluvia considerada muy intensa (mm/h) |
 | `min_probability` | 50 | Probabilidad mínima para que cuente la lluvia intensa (%) |
-| `grace_hours` | 1 | Restaurar este número de horas después de la última hora de tormenta |
-| `max_hours` | 36 | Límite de seguridad: horas máximas en modo tormenta |
-| `max_writes_per_day` | 20 | Límite de seguridad de escrituras en el inversor por día |
+| `reserve_soc` | 80 | Nivel mínimo de batería alrededor de una tormenta (%) |
+| `reserve_lead_hours` | 0.5 | La reserva se aplica desde estas horas antes de cada hora de tormenta |
+| `grace_hours` | 1 | ... hasta estas horas después |
+| `shortfall_penalty` | 2.0 | Coste (€ por kWh y hora) de estar por debajo de la reserva |
+| `outage_soc` | 15 | Nivel de batería permitido mientras no hay red (%) |
 
 ### `[tariff]`
 
+Solo como respaldo, cuando no hay precios PVPC reales disponibles.
+
 | Clave | Por defecto | Descripción |
 |---|---|---|
+| `fallback_prices` | valle 0,18, llano 0,15, punta 0,25 | Precio representativo de cada periodo (€/kWh) |
 | `periods` | 2.0TD | Periodos de los días laborables: `["HH:MM", "off-peak" \| "mid" \| "peak"]`, el primero a las 00:00, como máximo 6 |
 | `weekend_off_peak` | true | Sábados y domingos son valle todo el día |
 | `holidays` | Festivos nacionales de fecha fija | Días valle: `"MM-DD"` (todos los años) o `"YYYY-MM-DD"` |
-
-Periodos 2.0TD por defecto en días laborables: 00-08 valle (`off-peak`), 08-10
-llano (`mid`), 10-14 punta (`peak`), 14-18 llano, 18-22 punta, 22-24 llano. En la
-2.0TD solo cuentan como valle los festivos nacionales, no los autonómicos ni los
-locales.
 
 ### `[optimizer]`
 
@@ -505,23 +434,22 @@ La ubicación y la zona horaria se toman de `[storm]` si no se indican en `[opti
 
 - **`backups/`**: ficheros JSON con todos los registros de configuración en bruto,
   creados por `deye_read_config.py` y antes de cada escritura de `deye_apply.py` y
-  `deye_storm.py`. Cada fichero indica la fecha y el motivo.
-- **`state/storm.json`**: estado del modo tormenta (activo o no, fin de la tormenta,
-  carga de emergencia, corte, número de escrituras del día).
-- **`state/pre_storm.toml`**: perfil con la configuración guardada al entrar en modo
-  tormenta; se restaura al terminar.
+  `deye_optimizer.py`. Cada fichero indica la fecha y el motivo.
+- **`state/optimizer.json`**: estado del modo automático (corte, número de
+  escrituras del día).
+- **`state/prices.json`**: caché de los precios PVPC de los últimos días.
+- **`state/optimizer_plan.json`** y **`state/optimizer_log.csv`**: último plan e
+  historial de planes.
 
 Para volver manualmente a una configuración conocida:
 
 ```bash
-sudo systemctl stop deye-storm.service                    # si el modo tormenta está en marcha
+sudo systemctl stop deye-optimizer.service                # si no, reescribe las franjas
 .venv/bin/python deye_apply.py profiles/original.toml --apply
 ```
 
-Si el modo tormenta estaba activo, `state/pre_storm.toml` es la configuración que
-tenías antes de que empezara y se puede aplicar del mismo modo. Borra
-`state/storm.json` antes de volver a arrancar el servicio para que empiece en modo
-normal.
+Vuelve a arrancar el servicio (`sudo systemctl start deye-optimizer.service`) para
+volver al modo automático.
 
 ## Mapas de registros
 
@@ -535,8 +463,9 @@ formato (`group`, `id`, `writable`, `min`/`max`, `reg`, `name`, `type`, `scale`,
 |---|---|---|
 | `deye_sg0xlp1.toml` | Deye híbrido monofásico BT (SG03LP1, SG04LP1, SG05LP1...) | SUN-6K-SG03LP1-EU |
 
-Los registros de datos en vivo que usa el modo tormenta (tensión de batería 183,
-SOC 184, estado de la red 194) están definidos en `deye_storm.py`.
+Los registros de datos en vivo que usa el modo automático (tensión de batería 183,
+SOC 184, estado de la red 194, capacidad de la batería 204) están definidos en
+`deye_optimizer.py`.
 
 Antes de escribir en un modelo no probado, compara la salida de `deye_read_config.py`
 con la pantalla o la app del inversor: los modelos monofásicos más antiguos usan otra
@@ -551,13 +480,18 @@ distribución de registros.
   ser el del logger, no el del inversor.
 - **Valores sin sentido** (horas como 00:92, corrientes enormes): el mapa de
   registros no corresponde a tu modelo o firmware. No escribas nada; revisa el mapa.
-- **El modo tormenta no hace nada**: ejecuta `deye_storm.py` sin opciones para ver
-  qué decidiría ahora y revisa el registro con `journalctl -u deye-storm.service`.
+- **El modo automático hace algo inesperado**: ejecuta `deye_optimizer.py` sin
+  opciones para ver el plan actual hora a hora (simulación) y revisa el registro con
+  `journalctl -u deye-optimizer.service`.
+- **Se deshacen los cambios de perfiles manuales**: el servicio de modo automático
+  gestiona las franjas Time Of Use. Detenlo para usar perfiles manuales.
 - **"daily write limit reached"**: algo está cambiando valores repetidamente. Revisa
   el registro antes de subir `max_writes_per_day`.
 
 ## Hoja de ruta
 
+- Aprender el perfil de consumo del historial del inversor, en lugar de un valor
+  fijo de la configuración.
 - Meteocat (Servei Meteorològic de Catalunya) como fuente adicional: detección de
   rayos (XDDE), lluvia medida en estaciones cercanas (XEMA) y su propia previsión,
   para confirmar las tormentas que están ocurriendo de verdad.

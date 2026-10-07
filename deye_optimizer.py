@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
 """
-Price optimizer: plans grid charging from the real hourly PVPC prices (REData),
-the solar forecast (Open-Meteo), the expected consumption and the battery SOC,
-and builds the Time Of Use slots that minimise the electricity cost.
+Automatic mode: plans the battery from the real hourly PVPC prices (REData), the
+solar forecast, the expected consumption and the SOC, with storm protection, and
+writes the Time Of Use slots to the inverter.
 
-Every 'interval' seconds:
-  1. Read SOC, battery capacity and voltage from the inverter.
-  2. Get the PVPC prices for today and tomorrow (REData, cached), the solar
-     forecast on the plane of the panels and the consumption profile.
-  3. Simulate the battery hour by hour and search the hours to charge from the
-     grid and the hours to keep (not use) the battery that minimise the cost.
-  4. Build the 6 Time Of Use slots and the grid charge current.
-  5. Dry run (default): log the plan and the changes it would make.
-     With --apply: write them (never while storm mode is active).
-
-Settings: [optimizer] section of config.toml.
+Loop:
+  - every [storm] grid_check_interval seconds (60): grid check. If the grid goes
+    down, all slots are lowered to outage_soc at once (whole battery available);
+    when it returns, the plan is recalculated immediately.
+  - every [optimizer] interval seconds (900): full plan.
+      1. Read SOC, battery capacity and voltage.
+      2. PVPC prices for today and tomorrow (cached; missing hours use the previous
+         day's price, then the [tariff] fallback prices), and one Open-Meteo call for
+         the solar forecast on the panels and the storm forecast.
+      3. Storm protection: from reserve_lead_hours before each storm hour until
+         grace_hours after it, the battery must stay at or above reserve_soc. Being
+         below it has a high cost (shortfall_penalty), so the plan charges in the
+         cheapest hours before the storm, and in peak hours only if there is no other way.
+      4. Search the hours to charge from the grid and to keep the battery that
+         minimise the cost (losses, wear and value of the energy left included).
+      5. Build the 6 Time Of Use slots (SOC in steps of soc_step %) and the grid
+         charge current, and write them only if they differ from the inverter.
 
 Usage:
-    python deye_optimizer.py                     # single plan, dry run
-    python deye_optimizer.py --daemon            # service, dry run (simulation)
-    python deye_optimizer.py --daemon --apply    # service, writes to the inverter
+    python deye_optimizer.py                    # single plan, dry run
+    python deye_optimizer.py --apply            # single plan, write it
+    python deye_optimizer.py --daemon --apply   # service
+    python deye_optimizer.py --assume-storm 6   # dry run with a storm in 6 h (testing)
+    python deye_optimizer.py --assume-outage    # dry run with the grid down (testing)
 """
 
 import argparse
@@ -29,6 +37,7 @@ import math
 import signal
 import sys
 import threading
+import time
 import tomllib
 import urllib.parse
 import urllib.request
@@ -39,14 +48,15 @@ from zoneinfo import ZoneInfo
 from deye_apply import compute_changes, write
 from deye_common import DEFAULT_CONFIG, connect, load_config, read_block
 from deye_map import load_map
-from deye_read_config import read_registers, save_backup
+from deye_read_config import save_backup
+from deye_tariff import Tariff
 
 BASE = Path(__file__).parent
 STATE_DIR = BASE / "state"
+STATE_FILE = STATE_DIR / "optimizer.json"
 PRICE_CACHE = STATE_DIR / "prices.json"
 PLAN_FILE = STATE_DIR / "optimizer_plan.json"
 PLAN_LOG = STATE_DIR / "optimizer_log.csv"
-STORM_STATE = STATE_DIR / "storm.json"
 REDATA_API = "https://apidatos.ree.es/es/datos/mercados/precios-mercados-tiempo-real"
 FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 
@@ -55,10 +65,9 @@ REG_SOC = 184
 REG_GRID_STATUS = 194
 REG_BATTERY_CAPACITY = 204
 
-# kW per hour of the day (00..23), about 12.7 kWh/day
-DEFAULT_LOAD_PROFILE = [0.36] * 8 + [0.5] * 10 + [0.9] * 4 + [0.6] * 2
+DEFAULT_LOAD_PROFILE = [0.36] * 8 + [0.5] * 10 + [0.9] * 4 + [0.6] * 2  # kW, about 12.7 kWh/day
 
-DEFAULTS = {
+OPTIMIZER_DEFAULTS = {
     "interval": 900,
     "pv_kwp": 3.535,
     "pv_performance": 0.54,
@@ -76,33 +85,64 @@ DEFAULTS = {
     "max_charge_current": 90,
     "max_discharge_current": 95,
     "horizon_hours": 36,
+    "soc_step": 5,
+    "max_writes_per_day": 24,
     "load_profile": DEFAULT_LOAD_PROFILE,
 }
+STORM_DEFAULTS = {
+    "enabled": True,
+    "timezone": "Europe/Madrid",
+    "grid_check_interval": 60,
+    "storm_codes": [95, 96, 99],
+    "heavy_rain_mm": 10.0,
+    "min_probability": 50,
+    "reserve_soc": 80,
+    "reserve_lead_hours": 0.5,
+    "grace_hours": 1,
+    "outage_soc": 15,
+    "shortfall_penalty": 2.0,
+}
+DEFAULT_FALLBACK_PRICES = {"off-peak": 0.18, "mid": 0.15, "peak": 0.25}
 
 
 def log(msg: str = "") -> None:
     print(msg, flush=True)
 
 
-# ------------------------------------------------------------------ settings
+# ------------------------------------------------------------------ settings and state
 
-def load_settings(config_path: Path) -> dict:
+def load_settings(config_path: Path) -> tuple[dict, dict, Tariff, dict]:
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
-    storm = cfg.get("storm", {})
-    s = {**DEFAULTS, **cfg.get("optimizer", {})}
-    for key in ("latitude", "longitude", "timezone"):  # shared location with storm mode
-        s.setdefault(key, storm.get(key))
-    errors = [f"missing [optimizer] or [storm] {k}" for k in ("latitude", "longitude")
+    s = {**OPTIMIZER_DEFAULTS, **cfg.get("optimizer", {})}
+    st = {**STORM_DEFAULTS, **cfg.get("storm", {})}
+    for key in ("latitude", "longitude", "timezone"):  # location: [optimizer] or [storm]
+        s.setdefault(key, st.get(key))
+    errors = [f"missing [storm] {k}" for k in ("latitude", "longitude")
               if not isinstance(s.get(k), (int, float))]
-    s["tz"] = ZoneInfo(s.get("timezone") or "Europe/Madrid")
+    s["tz"] = ZoneInfo(s["timezone"])
     if len(s["load_profile"]) != 24:
         errors.append("[optimizer] load_profile must have 24 values (kW for each hour)")
     if not 5 <= s["min_soc"] < s["max_soc"] <= 100:
         errors.append("[optimizer] requires 5 <= min_soc < max_soc <= 100")
+    if not s["min_soc"] <= st["reserve_soc"] <= s["max_soc"]:
+        errors.append("[storm] reserve_soc must be between [optimizer] min_soc and max_soc")
+    if not isinstance(st["grid_check_interval"], int) or st["grid_check_interval"] < 10:
+        errors.append("[storm] grid_check_interval must be at least 10 seconds")
     if errors:
         sys.exit("ERROR in configuration:\n  - " + "\n  - ".join(errors))
-    return s
+    tariff_cfg = cfg.get("tariff", {})
+    fallback = {**DEFAULT_FALLBACK_PRICES, **tariff_cfg.get("fallback_prices", {})}
+    return s, st, Tariff(tariff_cfg, s["tz"]), fallback
+
+
+def load_state() -> dict:
+    return json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+
+
+def save_state(state: dict) -> None:
+    STATE_DIR.mkdir(exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
 # ------------------------------------------------------------------ prices (REData)
@@ -122,19 +162,17 @@ def fetch_day_prices(d: date, tz) -> dict[str, float]:
 
 
 class PriceCache:
-    def __init__(self, tz):
-        self.tz = tz
+    def __init__(self, tz, tariff: Tariff, fallback: dict):
+        self.tz, self.tariff, self.fallback = tz, tariff, fallback
         self.prices: dict[str, float] = json.loads(PRICE_CACHE.read_text()) if PRICE_CACHE.exists() else {}
 
     def has_day(self, d: date) -> bool:
-        return sum(1 for k in self.prices if k.startswith(d.isoformat())) >= 23  # 23-25 h (DST days)
+        return sum(1 for k in self.prices if k.startswith(d.isoformat())) >= 23  # 23-25 h on DST days
 
     def update(self, now: datetime) -> None:
-        days = [now.date()]
-        if now.hour >= 20:  # tomorrow's PVPC is published around 20:15
-            days.append(now.date() + timedelta(days=1))
+        days = [now.date()] + ([now.date() + timedelta(days=1)] if now.hour >= 20 else [])
         changed = False
-        for d in days:
+        for d in days:  # tomorrow's PVPC is published around 20:15
             if not self.has_day(d):
                 try:
                     self.prices.update(fetch_day_prices(d, self.tz))
@@ -147,39 +185,56 @@ class PriceCache:
             STATE_DIR.mkdir(exist_ok=True)
             PRICE_CACHE.write_text(json.dumps(self.prices, indent=1, sort_keys=True))
 
-    def get(self, t: datetime) -> tuple[float | None, bool]:
-        """(price, estimated). Missing hours use the same hour of the previous day."""
+    def get(self, t: datetime) -> tuple[float, str]:
+        """(price, source): 'pvpc', 'previous day' or 'tariff'."""
         p = self.prices.get(t.isoformat())
         if p is not None:
-            return p, False
+            return p, "pvpc"
         p = self.prices.get((t - timedelta(days=1)).isoformat())
-        return p, True
+        if p is not None:
+            return p, "previous day"
+        return self.fallback[self.tariff.period_at(t)[0]], "tariff"
 
 
-# ------------------------------------------------------------------ solar forecast (Open-Meteo)
+# ------------------------------------------------------------------ weather (Open-Meteo)
 
-def fetch_solar(s: dict) -> dict[str, float]:
-    """kWh expected in each hour (keyed by the hour start)."""
-    params = {"latitude": s["latitude"], "longitude": s["longitude"], "timezone": str(s["tz"]),
-              "tilt": s["panel_tilt"], "azimuth": s["panel_azimuth"],
-              "hourly": "global_tilted_irradiance", "forecast_days": 3}
+def fetch_weather(s: dict) -> dict[str, dict]:
+    """Per hour start: expected solar kWh, weather code, rain (mm) and rain probability (%)."""
+    params = {"latitude": s["latitude"], "longitude": s["longitude"], "timezone": s["timezone"],
+              "tilt": s["panel_tilt"], "azimuth": s["panel_azimuth"], "forecast_days": 3,
+              "hourly": "global_tilted_irradiance,weather_code,precipitation,precipitation_probability"}
     with urllib.request.urlopen(f"{FORECAST_API}?{urllib.parse.urlencode(params)}", timeout=30) as resp:
-        data = json.load(resp)
-    h = data["hourly"]
+        h = json.load(resp)["hourly"]
     factor = s["pv_kwp"] * s["pv_performance"] / 1000
-    out = {}
-    for t, g in zip(h["time"], h["global_tilted_irradiance"]):
-        # Open-Meteo radiation is the mean of the preceding hour: value at 13:00 = 12:00-13:00
-        start = datetime.fromisoformat(t).replace(tzinfo=s["tz"]) - timedelta(hours=1)
-        out[start.isoformat()] = (g or 0) * factor
+    out: dict[str, dict] = {}
+    for i, t in enumerate(h["time"]):
+        ts = datetime.fromisoformat(t).replace(tzinfo=s["tz"])
+        # Radiation and rain are sums/means over the preceding hour: value at 13:00 = 12:00-13:00
+        prev = (ts - timedelta(hours=1)).isoformat()
+        out.setdefault(prev, {})
+        out[prev]["pv"] = (h["global_tilted_irradiance"][i] or 0) * factor
+        out[prev]["rain"] = h["precipitation"][i] or 0
+        out.setdefault(ts.isoformat(), {})
+        out[ts.isoformat()]["code"] = h["weather_code"][i]
+        out[ts.isoformat()]["prob"] = h["precipitation_probability"][i]
     return out
 
 
-# ------------------------------------------------------------------ simulation and optimization
+def storm_reason(w: dict, st: dict) -> str | None:
+    reasons = []
+    if w.get("code") in st["storm_codes"]:
+        reasons.append(f"thunderstorm (code {w['code']})")
+    prob = w.get("prob") if w.get("prob") is not None else 100
+    if w.get("rain", 0) >= st["heavy_rain_mm"] and prob >= st["min_probability"]:
+        reasons.append(f"heavy rain {w['rain']:.1f} mm/h ({prob} %)")
+    return ", ".join(reasons) or None
+
+
+# ------------------------------------------------------------------ battery model and search
 
 class Model:
-    def __init__(self, s: dict, capacity_kwh: float, voltage: float):
-        self.s = s
+    def __init__(self, s: dict, st: dict, capacity_kwh: float, voltage: float):
+        self.s, self.st = s, st
         self.cap = capacity_kwh
         self.min = capacity_kwh * s["min_soc"] / 100
         self.max = capacity_kwh * s["max_soc"] / 100
@@ -189,49 +244,52 @@ class Model:
         self.grid_kw = s["grid_power_limit"] / 1000
         self.max_grid_charge_kw = s["max_grid_charge_current"] * voltage / 1000
 
-    def simulate(self, hours: list[dict], soc0: float, gc: list[float], hold: list[bool], detail=False):
+    def simulate(self, hours, soc0, gc, hold, detail=False):
         soc, cost, rows = soc0, 0.0, []
         for i, h in enumerate(hours):
+            floor = max(self.min, h["reserve"])
             imp = exp = pv_charge = grid_charge = discharge = 0.0
             start = soc
             net = h["pv"] - h["load"]
             if net >= 0:
-                pv_charge = min(net, (self.max - soc) / self.eff_c, self.max_charge_kw)
+                pv_charge = min(net, max(0.0, (self.max - soc) / self.eff_c), self.max_charge_kw * h["frac"])
                 soc += pv_charge * self.eff_c
                 exp = net - pv_charge
             else:
                 need = -net
                 if not hold[i]:
-                    discharge = min(need, max(0.0, (soc - self.min) * self.eff_d), self.max_discharge_kw)
+                    discharge = min(need, max(0.0, (soc - floor) * self.eff_d), self.max_discharge_kw * h["frac"])
                     soc -= discharge / self.eff_d
                 imp = need - discharge
             if gc[i] > 0:
-                grid_charge = min(gc[i], max(0.0, (self.max - soc) / self.eff_c),
-                                  max(0.0, self.max_charge_kw - pv_charge), max(0.0, self.grid_kw - imp))
+                grid_charge = min(gc[i] * h["frac"], max(0.0, (self.max - soc) / self.eff_c),
+                                  max(0.0, self.max_charge_kw * h["frac"] - pv_charge),
+                                  max(0.0, self.grid_kw * h["frac"] - imp))
                 soc += grid_charge * self.eff_c
                 imp += grid_charge
             cost += imp * h["price"] - exp * self.s["export_price"] + discharge * self.s["cycle_cost"]
+            if soc < h["reserve"] - 1e-6:  # storm protection: being below the reserve is expensive
+                cost += (h["reserve"] - soc) * self.st["shortfall_penalty"]
             if detail:
                 rows.append({"start_soc": start, "end_soc": soc, "import": imp, "export": exp,
                              "grid_charge": grid_charge, "discharge": discharge})
-        # Energy left in the battery is worth what it would save later
-        terminal = sorted(h["price"] for h in hours)[len(hours) // 2]
+        terminal = sorted(h["price"] for h in hours)[len(hours) // 2]  # value of the energy left
         cost -= (soc - self.min) * self.eff_d * terminal
         return (cost, rows) if detail else cost
 
-    def optimize(self, hours: list[dict], soc0: float, step: float = 0.25):
-        """Two-phase local search: single-hour moves first, then blocks of consecutive
-        hours starting from that result (only improvements are accepted)."""
+    def optimize(self, hours, soc0, step=0.25):
+        """Two-phase local search: single-hour moves, then blocks of consecutive hours
+        starting from that result (only improvements are accepted)."""
         n = len(hours)
         gc, hold = [0.0] * n, [False] * n
         best = self.simulate(hours, soc0, gc, hold)
         for max_run in (1, 8):
-            gc, hold, best = self._search(hours, soc0, gc, hold, best, step, max_run)
+            best = self._search(hours, soc0, gc, hold, best, step, max_run)
         return gc, hold, best
 
     def _search(self, hours, soc0, gc, hold, best, step, max_run):
         n = len(hours)
-        for _ in range(600):
+        for _ in range(800):
             move, move_cost = None, best - 1e-4
             for i in range(n):
                 if gc[i] + step <= self.max_grid_charge_kw + 1e-9:
@@ -246,9 +304,7 @@ class Model:
                     gc[i] += step
                     if c < move_cost:
                         move, move_cost = ("remove", i), c
-                # Keep (hold) or release the battery over runs of consecutive hours: holding a
-                # single hour only shifts its use to the next hour, so blocks are needed
-                for length in range(1, max_run + 1):
+                for length in range(1, max_run + 1):  # keep / release the battery over blocks of hours
                     if i + length > n:
                         break
                     for value in (True, False):
@@ -261,7 +317,7 @@ class Model:
                         if c < move_cost:
                             move, move_cost = ("hold", i, length, value), c
             if move is None:
-                break
+                return best
             if move[0] == "add":
                 gc[move[1]] += step
             elif move[0] == "remove":
@@ -270,42 +326,53 @@ class Model:
                 _, i, length, value = move
                 hold[i:i + length] = [value] * length
             best = move_cost
-        return gc, hold, best
+        return best
 
 
 # ------------------------------------------------------------------ Time Of Use layout
 
 def build_slots(hours, rows, gc, hold, model, s, n_slots=6):
     """Map the next 24 hours to a daily table of n_slots Time Of Use slots."""
-    pct = lambda kwh: round(kwh / model.cap * 100)
+    step = s["soc_step"]
+    up = lambda kwh: min(s["max_soc"], max(s["min_soc"], math.ceil(kwh / model.cap * 100 / step - 1e-9) * step))
     by_hour = {}
     for k, h in enumerate(hours[:24]):
+        floor = up(max(model.min, h["reserve"]))
         if rows[k]["grid_charge"] > 0.01:
-            entry = ("charge", min(s["max_soc"], max(pct(rows[k]["end_soc"]), s["min_soc"])))
+            entry = ("charge", max(up(rows[k]["end_soc"]), floor))
         elif hold[k]:
-            entry = ("hold", max(s["min_soc"], pct(rows[k]["start_soc"])))
+            entry = ("hold", max(up(rows[k]["start_soc"]), floor))
         else:
-            entry = ("use", s["min_soc"])
+            entry = ("use", floor)
         by_hour[h["time"].hour] = entry
     seq = [by_hour.get(hr, ("use", s["min_soc"])) for hr in range(24)]
 
     segs = []  # [start_hour, action, soc, length]
     for hr, (action, soc) in enumerate(seq):
-        if segs and segs[-1][1] == action and abs(segs[-1][2] - soc) <= 5:
+        if segs and segs[-1][1] == action and segs[-1][2] == soc:
             segs[-1][3] += 1
-            if action == "charge":
-                segs[-1][2] = max(segs[-1][2], soc)
+        elif segs and segs[-1][1] == action == "charge":
+            segs[-1][2] = max(segs[-1][2], soc)
+            segs[-1][3] += 1
         else:
             segs.append([hr, action, soc, 1])
-    while len(segs) > n_slots:  # merge the shortest segment into a neighbour
-        i = min(range(len(segs)), key=lambda j: (segs[j][3], segs[j][1] == "charge"))
-        j = i - 1 if i > 0 else 1
-        keep, drop = (segs[j], segs[i]) if segs[j][1] == "charge" or segs[i][1] != "charge" else (segs[i], segs[j])
-        start = min(segs[i][0], segs[j][0])
-        merged = [start, keep[1], keep[2], segs[i][3] + segs[j][3]]
-        lo = min(i, j)
-        segs[lo:lo + 2] = [merged]
-    while len(segs) < n_slots:  # split the longest segment (same action)
+    def merge_cost(A, B):
+        """(damage, merged segment) of joining two neighbouring segments."""
+        start, length = A[0], A[3] + B[3]
+        if A[1] == B[1]:
+            return 0, [start, A[1], max(A[2], B[2]), length]
+        kinds = {A[1], B[1]}
+        if kinds == {"hold", "use"}:  # drop the hold: the battery can simply be used
+            hold_seg, use_seg = (A, B) if A[1] == "hold" else (B, A)
+            return hold_seg[3], [start, "use", use_seg[2], length]
+        charge, other = (A, B) if A[1] == "charge" else (B, A)
+        # extending a charge over other hours buys energy at hours the plan did not choose
+        return 3 * other[3], [start, "charge", charge[2], length]
+
+    while len(segs) > n_slots:  # join the neighbouring pair that damages the plan least
+        best = min(range(len(segs) - 1), key=lambda k: merge_cost(segs[k], segs[k + 1])[0])
+        segs[best:best + 2] = [merge_cost(segs[best], segs[best + 1])[1]]
+    while len(segs) < n_slots:  # the inverter needs n_slots increasing times: split the longest
         i = max(range(len(segs)), key=lambda j: segs[j][3])
         a = segs[i]
         half = a[3] // 2
@@ -314,144 +381,227 @@ def build_slots(hours, rows, gc, hold, model, s, n_slots=6):
              "action": seg[1]} for k, seg in enumerate(segs)]
 
 
-# ------------------------------------------------------------------ the optimizer
+# ------------------------------------------------------------------ the service
 
 class Optimizer:
-    def __init__(self, s, conf, regmap, map_path, apply):
-        self.s, self.conf, self.regmap, self.map_path, self.apply = s, conf, regmap, map_path, apply
-        self.prices = PriceCache(s["tz"])
+    def __init__(self, s, st, tariff, fallback, conf, regmap, map_path, apply,
+                 assume_storm=None, assume_outage=False):
+        self.s, self.st, self.tariff = s, st, tariff
+        self.conf, self.regmap, self.map_path, self.apply = conf, regmap, map_path, apply
+        self.assume_storm, self.assume_outage = assume_storm, assume_outage
+        self.prices = PriceCache(s["tz"], tariff, fallback)
+        self.state = load_state()
         self.last_slots = None
 
-    def read_live(self) -> dict[int, int]:
+    # -- helpers
+    def persist(self) -> None:
+        if self.apply:
+            save_state(self.state)
+
+    def read(self, full: bool) -> dict[int, int]:
         inv = connect(self.conf, quiet=True)
         try:
             r = read_block(inv, 150, 50)
-            r.update(read_block(inv, 200, 81))
-            r.update(read_block(inv, 280, 20))
+            if full:
+                r.update(read_block(inv, 200, 81))
+                r.update(read_block(inv, 280, 20))
             return r
         finally:
             inv.disconnect()
 
-    def plan(self) -> None:
-        s = self.s
-        now = datetime.now(s["tz"])
-        start = now.replace(minute=0, second=0, microsecond=0)
-        self.prices.update(now)
-        solar = fetch_solar(s)
-        r = self.read_live()
-        voltage = r[REG_BATTERY_VOLTAGE] / 100 or s["battery_nominal_voltage"]
-        model = Model(s, r[REG_BATTERY_CAPACITY] * s["battery_nominal_voltage"] / 1000, voltage)
-        soc0 = model.cap * r[REG_SOC] / 100
+    def grid_ok(self, r) -> bool:
+        return r[REG_GRID_STATUS] == 1 and not self.assume_outage
 
-        hours, estimated = [], 0
-        for k in range(s["horizon_hours"]):
-            t = start + timedelta(hours=k)
-            price, est = self.prices.get(t)
-            if price is None:
-                break
-            estimated += est
-            frac = 1 - now.minute / 60 if k == 0 else 1  # remaining part of the current hour
-            hours.append({"time": t, "price": price, "pv": solar.get(t.isoformat(), 0.0) * frac,
-                          "load": s["load_profile"][t.hour] * frac, "estimated": est})
-        if len(hours) < 6:
-            log("Not enough price data to plan; skipping this cycle.")
+    def write_profile(self, profile: dict, label: str, r: dict, force: bool = False) -> None:
+        proposed, changes, errors, _ = compute_changes(profile, self.regmap, r)
+        if errors:
+            log(f"ERRORS in {label} (nothing written): " + "; ".join(errors))
+            return
+        if not changes:
+            return
+        log(f"  {len(changes)} change(s) for {label}: " + "; ".join(f"{n} {a}->{b}" for n, a, b in changes[:10])
+            + (" ..." if len(changes) > 10 else ""))
+        if not self.apply:
+            log("  Dry run: nothing written.")
+            return
+        today = datetime.now(self.s["tz"]).date().isoformat()
+        writes = self.state.setdefault("writes", {"date": today, "count": 0})
+        if writes["date"] != today:
+            writes.update(date=today, count=0)
+        if writes["count"] >= self.s["max_writes_per_day"] and not force:
+            log(f"  WARNING: daily write limit reached ({self.s['max_writes_per_day']}), not writing.")
+            return
+        save_backup("auto", self.map_path, r, reason=label)
+        failures = write(self.conf, r, proposed)
+        writes["count"] += 1
+        self.persist()
+        log("  Written and verified." if not failures else "  WARNING: " + "; ".join(failures))
+
+    # -- outage protection
+    def outage_profile(self) -> dict:
+        n = self.regmap["tou"]["slots"]
+        return {"tou": [{"slot": i + 1, "soc": self.st["outage_soc"]} for i in range(n)]}
+
+    def grid_check(self) -> None:
+        r = self.read(full=False)
+        ok = self.grid_ok(r)
+        if not ok and not self.state.get("outage"):
+            log(f"[{datetime.now(self.s['tz']):%H:%M}] Grid DOWN: battery available down to "
+                f"{self.st['outage_soc']} %.")
+            self.state["outage"] = True
+            self.persist()
+            self.write_profile(self.outage_profile(), "outage", self.read(full=True), force=True)
+        elif ok and self.state.get("outage"):
+            log(f"[{datetime.now(self.s['tz']):%H:%M}] Grid back: recalculating the plan.")
+            self.state["outage"] = False
+            self.persist()
+            self.plan()
+
+    # -- the plan
+    def plan(self) -> None:
+        s, st = self.s, self.st
+        now = datetime.now(s["tz"])
+        r = self.read(full=True)
+        if not self.grid_ok(r):
+            if not self.state.get("outage"):
+                self.state["outage"] = True
+                self.persist()
+            log(f"[{now:%Y-%m-%d %H:%M}] Grid down: keeping the battery available, no plan.")
+            self.write_profile(self.outage_profile(), "outage", r, force=True)
             return
 
-        gc, hold, cost = model.optimize(hours, soc0)
+        self.prices.update(now)
+        weather = fetch_weather(s)
+        voltage = r[REG_BATTERY_VOLTAGE] / 100 or s["battery_nominal_voltage"]
+        model = Model(s, st, r[REG_BATTERY_CAPACITY] * s["battery_nominal_voltage"] / 1000, voltage)
+        soc0 = model.cap * r[REG_SOC] / 100
+        start = now.replace(minute=0, second=0, microsecond=0)
+
+        # Storm hours and reserve windows
+        storms = []
+        for k in range(s["horizon_hours"]):
+            t = start + timedelta(hours=k)
+            reason = storm_reason(weather.get(t.isoformat(), {}), st) if st["enabled"] else None
+            if reason:
+                storms.append((t, reason))
+        if self.assume_storm is not None:
+            t = start + timedelta(hours=math.ceil(self.assume_storm))
+            storms += [(t, "simulated storm"), (t + timedelta(hours=1), "simulated storm")]
+        windows = [(t - timedelta(hours=st["reserve_lead_hours"]), t + timedelta(hours=1 + st["grace_hours"]))
+                   for t, _ in storms]
+
+        hours, sources = [], {}
+        for k in range(s["horizon_hours"]):
+            t = start + timedelta(hours=k)
+            price, source = self.prices.get(t)
+            sources[source] = sources.get(source, 0) + 1
+            frac = 1 - now.minute / 60 if k == 0 else 1.0
+            w = weather.get(t.isoformat(), {})
+            in_storm = any(a < t + timedelta(hours=1) and t < b for a, b in windows)
+            hours.append({"time": t, "price": price, "frac": frac, "pv": w.get("pv", 0.0) * frac,
+                          "load": s["load_profile"][t.hour] * frac,
+                          "reserve": model.cap * st["reserve_soc"] / 100 if in_storm else 0.0})
+
+        gc, hold, _ = model.optimize(hours, soc0)
         cost, rows = model.simulate(hours, soc0, gc, hold, detail=True)
         baseline = model.simulate(hours, soc0, [0.0] * len(hours), [False] * len(hours))
         slots = build_slots(hours, rows, gc, hold, model, s)
-        need_kw = max([rows[k]["grid_charge"] for k in range(min(24, len(rows)))] + [0])
+        need_kw = max([rows[k]["grid_charge"] / hours[k]["frac"] for k in range(min(24, len(rows)))] + [0])
         current = min(s["max_grid_charge_current"], max(10, math.ceil(need_kw * 1000 / voltage / 5) * 5))
 
         changed = slots != self.last_slots
-        log(f"[{now:%Y-%m-%d %H:%M}] SOC {r[REG_SOC]} % | horizon {len(hours)} h"
-            + (f" ({estimated} h with estimated prices)" if estimated else "")
-            + f" | cost {cost:.2f} EUR vs {baseline:.2f} without plan (saving {baseline - cost:.2f})"
-            + ("" if changed else " | plan unchanged"))
+        src = ", ".join(f"{v} h {k}" for k, v in sources.items())
+        log(f"[{now:%Y-%m-%d %H:%M}] SOC {r[REG_SOC]} % | prices: {src} | "
+            + (f"STORM: {len(storms)} h, first {storms[0][0]:%d/%m %H:%M} ({storms[0][1]}) | " if storms else "")
+            + f"cost {cost:.2f} EUR vs {baseline:.2f} without plan" + ("" if changed else " | plan unchanged"))
         if changed:
-            log("  hour  EUR/kWh  solar  load  action   SOC")
+            log("  hour    EUR/kWh solar load  action   SOC  reserve")
             for k, h in enumerate(hours[:24]):
-                act = ("charge" if rows[k]["grid_charge"] > 0.01 else "hold" if hold[k] else "use")
+                act = "charge" if rows[k]["grid_charge"] > 0.01 else "hold" if hold[k] else "use"
                 extra = f" +{rows[k]['grid_charge']:.1f} kWh" if act == "charge" else ""
-                log(f"  {h['time']:%d %H}h  {h['price']:.3f}  {h['pv']:4.1f}  {h['load']:4.1f}  {act:7} "
-                    f"{round(rows[k]['end_soc'] / model.cap * 100):3d} %{extra}")
+                res = f"{st['reserve_soc']} %" if h["reserve"] else ""
+                log(f"  {h['time']:%d %H}h  {h['price']:.3f}  {h['pv']:4.1f} {h['load']:4.1f}  {act:7} "
+                    f"{round(rows[k]['end_soc'] / model.cap * 100):3d} %  {res:7}{extra}")
             log("  Time Of Use: " + " | ".join(f"{x['time']} {x['action']} {x['soc']}%" for x in slots)
                 + f" | grid charge current {current} A")
         self.last_slots = slots
 
         profile = {"parameters": {"grid_charge": True, "time_of_use": "MTWTFSS",
                                   "grid_charge_current": current,
+                                  "max_charge_current": s["max_charge_current"],
+                                  "max_discharge_current": s["max_discharge_current"],
                                   "grid_peak_shaving": True, "grid_peak_shaving_power": s["grid_power_limit"]},
                    "tou": [{k: v for k, v in x.items() if k != "action"} for x in slots]}
-        proposed, changes, errors, _ = compute_changes(profile, self.regmap, r)
-        if errors:
-            log("ERRORS in the plan (nothing written): " + "; ".join(errors))
-            return
-        storm = json.loads(STORM_STATE.read_text()).get("mode") == "storm" if STORM_STATE.exists() else False
-        if changes and changed:
-            log(f"  {len(changes)} change(s) vs the inverter" + (": " + "; ".join(
-                f"{n} {a}->{b}" for n, a, b in changes[:8]) + (" ..." if len(changes) > 8 else "")))
-        if changes and self.apply and not storm and r[REG_GRID_STATUS] == 1:
-            save_backup("optimizer", self.map_path, r, reason="optimizer plan")
-            failures = write(self.conf, r, proposed)
-            log("  Plan written." if not failures else "  WARNING: " + "; ".join(failures))
-        elif changes and self.apply and storm:
-            log("  Storm mode active: not writing.")
+        self.write_profile(profile, "plan", r)
 
         STATE_DIR.mkdir(exist_ok=True)
         PLAN_FILE.write_text(json.dumps({
             "time": now.isoformat(), "soc": r[REG_SOC], "cost": cost, "baseline": baseline,
-            "grid_charge_current": current, "slots": slots,
+            "grid_charge_current": current, "storms": [(t.isoformat(), x) for t, x in storms], "slots": slots,
             "hours": [{"time": h["time"].isoformat(), "price": h["price"], "pv": round(h["pv"], 2),
-                       "load": round(h["load"], 2), "grid_charge": round(rows[k]["grid_charge"], 2),
-                       "hold": hold[k], "soc": round(rows[k]["end_soc"] / model.cap * 100)}
-                      for k, h in enumerate(hours)]}, indent=1))
+                       "load": round(h["load"], 2), "reserve": bool(h["reserve"]),
+                       "grid_charge": round(rows[k]["grid_charge"], 2), "hold": hold[k],
+                       "soc": round(rows[k]["end_soc"] / model.cap * 100)} for k, h in enumerate(hours)]},
+            indent=1))
         new_file = not PLAN_LOG.exists()
         with PLAN_LOG.open("a", newline="") as f:
             w = csv.writer(f)
             if new_file:
-                w.writerow(["time", "soc", "cost", "baseline", "saving", "grid_charge_current", "slots", "changes"])
+                w.writerow(["time", "soc", "cost", "baseline", "storm_hours", "grid_charge_current", "slots"])
             w.writerow([now.isoformat(timespec="minutes"), r[REG_SOC], round(cost, 3), round(baseline, 3),
-                        round(baseline - cost, 3), current,
-                        " ".join(f"{x['time']}/{x['action']}/{x['soc']}" for x in slots), len(changes)])
+                        len(storms), current, " ".join(f"{x['time']}/{x['action']}/{x['soc']}" for x in slots)])
 
     def run_forever(self) -> None:
         stop = threading.Event()
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: stop.set())
-        log(f"Price optimizer started: every {self.s['interval']} s, "
-            f"{'APPLY' if self.apply else 'dry run (simulation)'} mode.")
+        log(f"Automatic mode started: plan every {self.s['interval']} s, grid check every "
+            f"{self.st['grid_check_interval']} s, storm protection {'on' if self.st['enabled'] else 'off'}, "
+            f"{'APPLY' if self.apply else 'dry run'} mode.")
+        next_plan = 0.0
         while not stop.is_set():
             try:
-                self.plan()
-            except (Exception, SystemExit) as e:
-                log(f"ERROR during planning, will retry: {e}")
-            stop.wait(self.s["interval"])
-        log("Price optimizer stopped.")
+                if time.monotonic() >= next_plan:
+                    self.plan()
+                    next_plan = time.monotonic() + self.s["interval"]
+                else:
+                    self.grid_check()
+            except (Exception, SystemExit) as e:  # never stop the service because of one failed check
+                log(f"ERROR, will retry: {e}")
+            stop.wait(self.st["grid_check_interval"])
+        log("Automatic mode stopped.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plan grid charging from real PVPC prices, solar and SOC")
+    parser = argparse.ArgumentParser(description="Automatic mode: price optimizer with storm protection")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--show", action="store_true", help="Only show the plan (default)")
     mode.add_argument("--apply", action="store_true", help="Write the plan to the inverter")
     parser.add_argument("--daemon", action="store_true", help="Run continuously as a service")
+    parser.add_argument("--assume-storm", type=float, metavar="HOURS",
+                        help="Pretend a 2-hour storm starts in HOURS hours (testing, dry run only)")
+    parser.add_argument("--assume-outage", action="store_true",
+                        help="Pretend the grid is down (testing, dry run only)")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Path to the configuration file (default: config.toml)")
     args = parser.parse_args()
+    if (args.assume_storm is not None or args.assume_outage) and (args.apply or args.daemon):
+        sys.exit("ERROR: --assume-storm and --assume-outage are for testing (single dry run only)")
 
-    s = load_settings(args.config)
+    s, st, tariff, fallback = load_settings(args.config)
     conf = load_config(args.config)
     map_path, regmap = load_map(args.config)
-    opt = Optimizer(s, conf, regmap, map_path, args.apply)
+    if "tou" not in regmap:
+        sys.exit("ERROR: this inverter's map does not define Time Of Use slots")
+    opt = Optimizer(s, st, tariff, fallback, conf, regmap, map_path, args.apply,
+                    args.assume_storm, args.assume_outage)
     if args.daemon:
         opt.run_forever()
-    else:
-        try:
-            opt.plan()
-        except Exception as e:
-            sys.exit(f"ERROR during planning: {e}")
+        return
+    try:
+        opt.plan()
+    except Exception as e:
+        sys.exit(f"ERROR during planning: {e}")
 
 
 if __name__ == "__main__":

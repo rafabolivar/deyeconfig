@@ -4,8 +4,9 @@
 
 Read and change the configuration of Deye hybrid inverters through the Solarman
 data logger on your local network (Modbus TCP, port 8899), without relying on the
-cloud. Includes a storm mode service that pre-charges the battery from the grid
-when thunderstorms are forecast, so the house is ready for a power outage.
+cloud. Includes an automatic mode that charges the battery in the cheapest hours
+from the real hourly electricity prices and protects the house against storms and
+power outages.
 
 ## Contents
 
@@ -17,8 +18,7 @@ when thunderstorms are forecast, so the house is ready for a power outage.
 - [Reading the inverter configuration](#reading-the-inverter-configuration)
 - [Profiles](#profiles)
 - [Exporting the current configuration](#exporting-the-current-configuration)
-- [Storm mode](#storm-mode)
-- [Price optimizer (dry run)](#price-optimizer-dry-run)
+- [Automatic mode](#automatic-mode)
 - [Configuration reference](#configuration-reference)
 - [Backups, state and rolling back](#backups-state-and-rolling-back)
 - [Register maps](#register-maps)
@@ -36,9 +36,9 @@ when thunderstorms are forecast, so the house is ready for a power outage.
 - **Profiles**: small TOML files with only the parameters you want to change, in
   normal units. Validated, backed up and verified on every write.
 - **Export**: dump the current configuration as a profile to keep it or go back to it.
-- **Storm mode service**: when storms are forecast, charges the battery from the
-  grid in the cheapest tariff periods, keeps a reserve during the storm and makes the
-  whole battery available during an outage.
+- **Automatic mode**: plans grid charging from the real hourly PVPC prices, the
+  solar forecast and the consumption, keeps a reserve when storms are forecast and
+  makes the whole battery available during an outage.
 - **Safe by default**: nothing is written without `--apply`, critical parameters are
   read-only, every write is preceded by a backup and read back to verify.
 
@@ -81,19 +81,18 @@ deye_test_connection.py   Connection test (read-only)
 deye_read_config.py       Show the full configuration and save a backup (read-only)
 deye_apply.py             Apply a profile (dry run unless --apply)
 deye_export.py            Export the current configuration as a profile (read-only)
-deye_storm.py             Storm mode (single check or service)
-deye_optimizer.py         Price optimizer: plans charging from real PVPC prices (dry run by default)
+deye_optimizer.py         Automatic mode: price optimizer with storm and outage protection
 deye_common.py            Shared: configuration loading, connection, register reads
 deye_map.py               Shared: register map handling and value conversions
-deye_tariff.py            Shared: tariff periods (off-peak, mid, peak), weekends and holidays
+deye_tariff.py            Shared: tariff periods (fallback prices), weekends and holidays
 maps/                     Register maps per inverter model (TOML)
 profiles/examples/        Example profiles (afternoon, autumn, winter, summer)
 profiles/                 Your own profiles (ignored by git)
-systemd/                  systemd units for the storm mode and price optimizer services
+systemd/                  systemd unit for the automatic mode service
 config.example.toml       Configuration template
 config.toml               Your configuration (ignored by git)
 backups/                  JSON backups of the inverter registers (ignored by git)
-state/                    Storm mode state (ignored by git)
+state/                    Automatic mode state, price cache and plans (ignored by git)
 ```
 
 ## Connection test
@@ -213,8 +212,8 @@ Examples for sunny days in autumn and winter (`profiles/examples/autumn.toml` an
   charging, 100 A for 30 s when discharging): 90 A charge, 95 A discharge. Above the
   BMS threshold the battery would disconnect, which during an outage would leave the
   house without power. Check your own BMS values before copying them.
-- The storm mode service is compatible with these profiles: it saves the
-  configuration when it starts and restores it when it ends.
+- These profiles are for manual use. While the automatic mode service runs, it
+  manages the Time Of Use slots itself and overwrites them at the next plan.
 
 `profiles/examples/summer.toml` is an earlier example without grid charging.
 
@@ -234,171 +233,115 @@ if missing. Read-only.
 Good practice: export your configuration before experimenting
 (`deye_export.py -o profiles/original.toml`), so you can always go back to it.
 
-## Storm mode
+## Automatic mode
 
-`deye_storm.py` is a service that keeps the battery charged when thunderstorms or
-very heavy rain are forecast ([Open-Meteo](https://open-meteo.com/), free, no API
-key), so the house is ready for a possible power outage. It charges from the grid
-in the cheapest tariff periods and never in peak hours, except in an emergency.
+`deye_optimizer.py` is a service that manages the battery on its own: it plans
+grid charging from the **real hourly PVPC prices**, the solar forecast, the
+expected consumption and the SOC, protects the house against storms and outages,
+and writes the Time Of Use slots to the inverter.
 
-Outside storm mode the service only checks the forecast and never touches the
-inverter. All values are configurable in the `[storm]` and `[tariff]` sections of
-`config.toml` (defaults in brackets).
+### Why real prices
 
-### When storm mode starts
+The fixed tariff periods (off-peak, mid, peak) only set part of the price (tolls
+and charges). The hourly PVPC price also includes the wholesale market price,
+which drops at midday because of solar generation. In September-October 2026 the
+cheapest 3 hours of the day were at midday or in the afternoon on 27 of 31 days
+(about 0.06 EUR/kWh at 14-17 h, versus 0.18 at night and 0.33 at 19-21 h). Prices
+come from REData, Red Eléctrica's public API (no key needed).
 
-1. **Off-peak period**: a storm is forecast within the next `forecast_hours` (24).
-   This is the main case: the battery is charged at off-peak prices, even for a
-   storm expected in the afternoon.
-2. **Storm happening now** (the forecast for the current hour meets the criteria),
-   at any time.
-3. **Backup**, mid period: a storm is forecast, the SOC is below
-   `backup_trigger_soc` (50 %) and this is the last cheap period (off-peak or mid)
-   before the storm. Example: storm at 21:00 on a weekday, storm mode starts at
-   14:00 to use the whole 14-18 mid period before the 18-22 peak.
-4. **Emergency**, peak period: a storm is happening or due within
-   `emergency_hours` (2) and the SOC is below `emergency_soc` (50 %).
+### How it works
 
-### Time Of Use layout in storm mode
-
-The 6 Time Of Use slots follow the tariff periods. With the default Spanish 2.0TD
-tariff on a weekday:
-
-| Slot | Start | Period | SOC | Grid charge | Effect |
-|---|---|---|---|---|---|
-| 1 | 00:00 | Off-peak | 100 % | Yes | Charge to the maximum at the cheapest price |
-| 2 | 08:00 | Mid | 80 % | Yes | Only charges if the battery drops below 80 % |
-| 3 | 10:00 | Peak | 80 % | No | Never charges; the battery does not go below 80 % |
-| 4 | 14:00 | Mid | 80 % | Yes | Only charges if below 80 % |
-| 5 | 18:00 | Peak | 80 % | No | Never charges; keeps the reserve |
-| 6 | 22:00 | Mid | 80 % | Yes | Only charges if below 80 % |
-
-- `charge_soc` (100 %): charge level in off-peak periods.
-- `hold_soc` (80 %): reserve kept until the storm has passed. The battery can be
-  used from 100 % down to 80 % in the morning and in peak hours, when grid energy
-  is most expensive, while the reserve for the outage stays intact.
-- **Weekends and holidays** are off-peak all day: every slot charges to 100 %.
-  The inverter uses the same table every day, so the service rewrites it when the
-  type of day changes (only in storm mode).
-- **Emergency charge** in a peak period: the peak slots charge up to
-  `emergency_soc` (50 %) until that peak period ends. The rest is completed in the
-  next mid or off-peak period.
-- **Charge current**: the grid charge current is set to `charge_current` (40 A)
-  to charge quickly, even if your daily profile uses a lower one.
-- **Grid power limit**: the inverter's grid peak shaving is set to
-  `grid_power_limit` (4000 W) so that the battery charge plus the house load never
-  exceed the contracted power; the inverter reduces the battery charge first.
-- **Outage protection**: the grid status is checked every `grid_check_interval`
-  seconds (60). If the grid goes down, all slots are lowered to `outage_soc` (15 %)
-  so the whole battery is available, whatever the inverter does with the slots in
-  off-grid mode. When the grid returns, the layout above is resumed.
-
-### When storm mode ends
-
-The configuration saved when storm mode started (`state/pre_storm.toml`) is restored:
-
-- `grace_hours` (1) after the last forecast storm hour, if no more storms are forecast;
-- if the storm is no longer forecast (two checks in a row);
-- outside an off-peak period, if the next storm comes after the next off-peak
-  period (it will be handled then, charging at off-peak prices);
-- after `max_hours` (36), as a safety limit.
+- **Every `interval` seconds (900), full plan:**
+  1. Reads the SOC, battery capacity and voltage.
+  2. Gets the PVPC prices for today and tomorrow (tomorrow's are published around
+     20:15; until then the previous day's prices are used as an estimate, and the
+     `[tariff]` fallback prices if there is nothing else) and, in one Open-Meteo
+     call, the solar forecast on the plane of the panels and the storm forecast.
+  3. **Storm protection**: from `reserve_lead_hours` (0.5) before each storm hour
+     until `grace_hours` (1) after it, the battery must stay at or above
+     `reserve_soc` (80 %). Being below it has a high cost in the calculation
+     (`shortfall_penalty`), so the plan charges in the cheapest hours before the
+     storm, and in peak hours only as much as needed if there is no other way.
+  4. Simulates the battery hour by hour and searches for the hours to **charge**
+     from the grid and the hours to **keep** the battery (the house uses the grid
+     while it is cheap) that minimise the total cost, including battery losses, a
+     wear cost per kWh and the value of the energy left at the end. Solar charging
+     comes first; the grid only completes what is worth buying.
+  5. Builds the 6 Time Of Use slots, the grid charge current (only what is needed,
+     up to `max_grid_charge_current`) and writes them only if they differ from the
+     inverter.
+- **Every `grid_check_interval` seconds (60), outage protection:** if the grid goes
+  down, all slots are lowered to `outage_soc` (15 %) at once, so the whole battery
+  is available. When the grid returns, the plan is recalculated immediately.
 
 What counts as a storm: weather codes in `storm_codes` (WMO 95, 96, 99 =
 thunderstorm) or rain of at least `heavy_rain_mm` (10 mm/h) with a probability of
 at least `min_probability` (50 %).
 
+### Time Of Use slots
+
+Each hour of the plan ends up as one of three actions:
+
+| Action | Slot | Effect |
+|---|---|---|
+| Charge | Grid charge on, SOC = target | Solar first, the grid completes up to the target |
+| Keep | Grid charge off, SOC = current level | The battery is not used; the house uses the grid while it is cheap |
+| Use | Grid charge off, SOC = minimum (15 %, or the storm reserve) | The battery supplies the house |
+
+The 24 hours are grouped into the 6 slots of the inverter, joining the
+neighbouring hours that damage the plan least (charging hours are never moved).
+Example plan for a normal October day: charge at 15:00-17:00 (the cheapest hours)
+up to 100 %, battery available the rest of the day.
+
 ### Writes to the inverter
 
-The service compares the desired configuration with the inverter on every check
-and only writes when something has to change (typically when storm mode starts,
-at tariff period changes that need it, on grid loss and return, and when it ends).
-Registers are written in contiguous blocks (the whole Time Of Use table in one
-operation) and read back a few seconds later to verify them. Every write is
-preceded by a backup in `backups/`, and there is a daily limit
-(`max_writes_per_day`, 20). If the inverter changes a value on its own, the next
-check corrects it.
+Slot SOC values are rounded up to `soc_step` (5 %), so small changes in the plan
+do not rewrite the inverter. Registers are written in contiguous blocks and read
+back to verify them, every write is preceded by a backup in `backups/`, and there
+is a daily limit (`max_writes_per_day`, 24) that never applies to the outage
+protection. The battery current limits (`max_charge_current`, 90 A;
+`max_discharge_current`, 95 A) and the grid power limit (`grid_power_limit`,
+4000 W, inverter peak shaving) are written with every plan.
 
 ### Running it
 
 ```bash
-.venv/bin/python deye_storm.py                    # single check, show what it would do
-.venv/bin/python deye_storm.py --apply            # single check, act on the inverter
-.venv/bin/python deye_storm.py --daemon --apply   # run as a service (used by systemd)
+.venv/bin/python deye_optimizer.py                    # single plan, dry run
+.venv/bin/python deye_optimizer.py --apply            # single plan, write it
+.venv/bin/python deye_optimizer.py --daemon --apply   # service (used by systemd)
+.venv/bin/python deye_optimizer.py --assume-storm 6   # dry run with a storm in 6 h (testing)
+.venv/bin/python deye_optimizer.py --assume-outage    # dry run with the grid down (testing)
 ```
 
-Testing options (single dry run only, nothing is written or saved):
-
-```bash
-.venv/bin/python deye_storm.py --assume-storm 6                           # pretend a storm in 6 h
-.venv/bin/python deye_storm.py --assume-outage --assume-storm 0           # storm now and grid down
-.venv/bin/python deye_storm.py --at '2026-10-07 14:30' --assume-storm 6.5 # pretend it is 14:30
-```
+The latest plan is saved in `state/optimizer_plan.json` and every plan is logged in
+`state/optimizer_log.csv`.
 
 ### Installing the service
 
-Adjust `User` and the paths in `systemd/deye-storm.service` if needed, then:
+Adjust `User` and the paths in `systemd/deye-optimizer.service` if needed, then:
 
 ```bash
-sudo cp systemd/deye-storm.service /etc/systemd/system/
+sudo cp systemd/deye-optimizer.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now deye-storm.service
+sudo systemctl enable --now deye-optimizer.service
 ```
 
 Useful commands:
 
 ```bash
-systemctl status deye-storm.service                     # is it running?
-journalctl -u deye-storm.service -f                     # follow the log live (Ctrl+C to exit)
-journalctl -u deye-storm.service --since today          # what it did today
-sudo systemctl restart deye-storm.service               # after changing config.toml or the code
-sudo systemctl stop deye-storm.service                  # stop it (state is kept)
+systemctl status deye-optimizer.service             # is it running?
+journalctl -u deye-optimizer.service -f             # follow the log live (Ctrl+C to exit)
+journalctl -u deye-optimizer.service --since today  # what it did today
+sudo systemctl restart deye-optimizer.service       # after changing config.toml or the code
+sudo systemctl stop deye-optimizer.service          # stop it (manual profiles take over)
 ```
 
-The state is saved in `state/`, so the service resumes where it was after a restart
-or a reboot. After changing `config.toml`, restart the service.
+While the service runs it manages the Time Of Use slots, so profiles applied by
+hand are overwritten at the next plan. Stop the service to use manual profiles.
 
 **Requirement for outage protection:** the machine running the service and the
 network equipment must stay powered during an outage (e.g. connected to the
 inverter's backup output or a UPS). The logger is powered by the inverter.
-
-## Price optimizer (dry run)
-
-`deye_optimizer.py` plans grid charging from the **real hourly PVPC prices**
-(REData, Red Eléctrica's public API, no key needed), the solar forecast on the
-plane of the panels (Open-Meteo), the expected consumption and the battery SOC.
-The fixed tariff periods do not reflect the real price: in September-October 2026
-the cheapest 3 hours were at midday or in the afternoon on 27 of 31 days (about
-0.06 EUR/kWh at 14-17 h, versus 0.18 at night and 0.33 at 19-21 h), because solar
-generation lowers the market price.
-
-Every `interval` seconds (900) it:
-
-1. Reads the SOC, battery capacity and voltage.
-2. Gets the PVPC prices for today and tomorrow (tomorrow's are published around
-   20:15; until then the previous day's prices are used as an estimate), the solar
-   forecast (irradiance x `pv_kwp` x `pv_performance`) and the consumption profile.
-3. Simulates the battery hour by hour and searches for the hours to **charge** from
-   the grid and the hours to **keep** the battery (the house uses the grid while it
-   is cheap) that minimise the total cost, including battery losses, a wear cost per
-   kWh and the value of the energy left at the end. Solar charging comes first; the
-   grid only completes what is worth buying.
-4. Builds the 6 Time Of Use slots and the grid charge current.
-5. Logs the plan, the expected cost versus doing nothing and the changes it would
-   make. With `--apply` it writes them (never while storm mode is active or the grid
-   is down).
-
-```bash
-.venv/bin/python deye_optimizer.py                   # single plan, dry run
-.venv/bin/python deye_optimizer.py --daemon          # service, dry run (simulation)
-.venv/bin/python deye_optimizer.py --daemon --apply  # service, writes to the inverter
-```
-
-The latest plan is saved in `state/optimizer_plan.json` and every plan is logged in
-`state/optimizer_log.csv`, to compare its decisions with reality before letting it
-write. The service unit `systemd/deye-optimizer.service` runs it in dry run mode.
-
-Status: first version, running in dry run mode. The consumption profile is a fixed
-configuration value for now; learning it from the inverter history is planned.
 
 ## Configuration reference
 
@@ -429,38 +372,29 @@ configuration value for now; learning it from the inverter history is planned.
 
 | Key | Default | Description |
 |---|---|---|
-| `latitude`, `longitude` | | Location for the weather forecast (decimal degrees) |
+| `latitude`, `longitude` | | Location for the forecasts (decimal degrees) |
 | `timezone` | `Europe/Madrid` | Local time zone |
-| `forecast_interval` | 900 | Seconds between forecast checks (also at every tariff period change) |
-| `grid_check_interval` | 60 | Seconds between grid checks in storm mode |
-| `forecast_hours` | 24 | Hours ahead to look for storms |
-| `charge_soc` | 100 | Grid charge level in off-peak periods (%) |
-| `hold_soc` | 80 | Reserve kept in storm mode; mid periods only charge up to here (%) |
-| `outage_soc` | 15 | Minimum SOC while the grid is down in storm mode (%) |
-| `backup_enabled` | true | Enable the backup trigger in mid periods |
-| `backup_trigger_soc` | 50 | Backup: SOC below this (%) |
-| `emergency_soc` | 50 | Emergency in peak periods: SOC below this, charge up to this (%) |
-| `emergency_hours` | 2 | Emergency: storm happening or due within this many hours |
-| `grid_power_limit` | 4000 | Maximum grid draw in storm mode (W, inverter peak shaving); 0 = do not change |
-| `charge_current` | 40 | Grid charge current in storm mode (A); 0 = do not change |
+| `enabled` | true | Storm protection on or off (price optimization always runs) |
+| `grid_check_interval` | 60 | Seconds between grid checks (outage detection) |
 | `storm_codes` | [95, 96, 99] | WMO weather codes considered a thunderstorm |
 | `heavy_rain_mm` | 10.0 | Rain considered very heavy (mm/h) |
 | `min_probability` | 50 | Minimum probability for heavy rain to count (%) |
-| `grace_hours` | 1 | Restore this many hours after the last storm hour |
-| `max_hours` | 36 | Safety limit: maximum hours in storm mode |
-| `max_writes_per_day` | 20 | Safety limit of inverter writes per day |
+| `reserve_soc` | 80 | Minimum battery level around a storm (%) |
+| `reserve_lead_hours` | 0.5 | The reserve applies from this many hours before each storm hour |
+| `grace_hours` | 1 | ... until this many hours after it |
+| `shortfall_penalty` | 2.0 | Cost (EUR per kWh and hour) of being below the reserve |
+| `outage_soc` | 15 | Battery level allowed while the grid is down (%) |
 
 ### `[tariff]`
 
+Fallback only, used when the real PVPC prices are not available.
+
 | Key | Default | Description |
 |---|---|---|
+| `fallback_prices` | off-peak 0.18, mid 0.15, peak 0.25 | Representative price of each period (EUR/kWh) |
 | `periods` | Spanish 2.0TD | Weekday periods: `["HH:MM", "off-peak" \| "mid" \| "peak"]`, first at 00:00, at most 6 |
 | `weekend_off_peak` | true | Saturdays and Sundays are off-peak all day |
 | `holidays` | Spanish fixed national holidays | Off-peak days: `"MM-DD"` (every year) or `"YYYY-MM-DD"` |
-
-Default 2.0TD periods on weekdays: 00-08 off-peak (valle), 08-10 mid (llano),
-10-14 peak (punta), 14-18 mid, 18-22 peak, 22-24 mid. In 2.0TD only national
-holidays count as off-peak, not regional or local ones.
 
 ### `[optimizer]`
 
@@ -486,22 +420,21 @@ Location and time zone are taken from `[storm]` unless set in `[optimizer]`.
 
 - **`backups/`**: JSON files with all raw configuration registers, created by
   `deye_read_config.py` and before every write by `deye_apply.py` and
-  `deye_storm.py`. Each file records the date and the reason.
-- **`state/storm.json`**: storm mode state (active or not, storm end, emergency
-  charge, outage, daily write count).
-- **`state/pre_storm.toml`**: profile with the configuration saved when storm mode
-  started; it is restored when storm mode ends.
+  `deye_optimizer.py`. Each file records the date and the reason.
+- **`state/optimizer.json`**: automatic mode state (outage, daily write count).
+- **`state/prices.json`**: cache of the PVPC prices of the last days.
+- **`state/optimizer_plan.json`** and **`state/optimizer_log.csv`**: latest plan
+  and history of plans.
 
 To go back to a known configuration manually:
 
 ```bash
-sudo systemctl stop deye-storm.service                    # if storm mode is running
+sudo systemctl stop deye-optimizer.service                # otherwise it rewrites the slots
 .venv/bin/python deye_apply.py profiles/original.toml --apply
 ```
 
-If storm mode was active, `state/pre_storm.toml` is the configuration you had
-before it started and can be applied the same way. Delete `state/storm.json`
-before starting the service again so it starts in normal mode.
+Start the service again (`sudo systemctl start deye-optimizer.service`) to go back
+to automatic mode.
 
 ## Register maps
 
@@ -515,8 +448,8 @@ support another model, edit or create a map. The file header documents the forma
 |---|---|---|
 | `deye_sg0xlp1.toml` | Deye single-phase LV hybrid (SG03LP1, SG04LP1, SG05LP1...) | SUN-6K-SG03LP1-EU |
 
-The live data registers used by storm mode (battery voltage 183, SOC 184, grid
-status 194) are defined in `deye_storm.py`.
+The live data registers used by the automatic mode (battery voltage 183, SOC 184,
+grid status 194, battery capacity 204) are defined in `deye_optimizer.py`.
 
 Before writing to a model that has not been tested, compare `deye_read_config.py`
 with the inverter's screen or app: older single-phase models use a different
@@ -531,13 +464,18 @@ register layout.
   the logger's, not the inverter's.
 - **Values that make no sense** (times like 00:92, huge currents): the register map
   does not match your model or firmware. Do not write; check the map.
-- **Storm mode does nothing**: run `deye_storm.py` without options to see the
-  current decision, and check the log with `journalctl -u deye-storm.service`.
+- **The automatic mode does something unexpected**: run `deye_optimizer.py`
+  without options to see the current plan hour by hour (dry run), and check the log
+  with `journalctl -u deye-optimizer.service`.
+- **Manual profile changes are undone**: the automatic mode service manages the
+  Time Of Use slots. Stop it to use manual profiles.
 - **"daily write limit reached"**: something is changing values repeatedly. Check
   the log before raising `max_writes_per_day`.
 
 ## Roadmap
 
+- Learn the consumption profile from the inverter history instead of a fixed
+  configuration value.
 - Meteocat (Catalan weather service) as an additional source: lightning detection
   (XDDE), measured rain at nearby stations (XEMA) and its own forecast, to confirm
   storms that are actually happening.
