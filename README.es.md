@@ -549,8 +549,12 @@ distribución de registros.
   `journalctl -u deye-optimizer.service`.
 - **Se deshacen los cambios de perfiles manuales**: el servicio de modo automático
   gestiona las franjas Time Of Use. Detenlo para usar perfiles manuales.
-- **"daily write limit reached"**: algo está cambiando valores repetidamente. Revisa
-  el registro antes de subir `max_writes_per_day`.
+- **"write limit reached"**: algo está cambiando valores repetidamente, o ha habido
+  muchos cambios legítimos (por ejemplo, durante el desarrollo). Revisa el registro;
+  durante las pruebas usa `--test-mode` y, si hace falta, `--reset-write-count`.
+- **"the inverter does not keep it"** (detección de bucles): el inversor revierte un
+  valor una y otra vez. Comprueba que el mapa de registros corresponde a tu modelo y
+  firmware.
 
 ## Hoja de ruta
 

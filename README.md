@@ -528,8 +528,11 @@ register layout.
   with `journalctl -u deye-optimizer.service`.
 - **Manual profile changes are undone**: the automatic mode service manages the
   Time Of Use slots. Stop it to use manual profiles.
-- **"daily write limit reached"**: something is changing values repeatedly. Check
-  the log before raising `max_writes_per_day`.
+- **"write limit reached"**: something is changing values repeatedly, or there have
+  been many legitimate changes (e.g. during development). Check the log; during
+  tests use `--test-mode` and, if needed, `--reset-write-count`.
+- **"the inverter does not keep it"** (loop detection): the inverter keeps reverting a
+  value. Check that the register map matches your model and firmware.
 
 ## Roadmap
 
