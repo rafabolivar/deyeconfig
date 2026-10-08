@@ -29,6 +29,8 @@ Usage:
     python deye_optimizer.py --daemon --apply   # service
     python deye_optimizer.py --assume-storm 6   # dry run with a storm in 6 h (testing)
     python deye_optimizer.py --assume-outage    # dry run with the grid down (testing)
+    python deye_optimizer.py --test-mode 4h     # relax the plan write limits for 4 hours (development)
+    python deye_optimizer.py --reset-write-count
 """
 
 import argparse
@@ -58,6 +60,8 @@ from deye_tariff import Tariff
 BASE = Path(__file__).parent
 STATE_DIR = BASE / "state"
 STATE_FILE = STATE_DIR / "optimizer.json"
+TEST_MODE_FILE = STATE_DIR / "test_mode.json"      # written by --test-mode, read by the service
+RESET_WRITES_FILE = STATE_DIR / "reset_writes"     # written by --reset-write-count
 PRICE_CACHE = STATE_DIR / "prices.json"
 PLAN_FILE = STATE_DIR / "optimizer_plan.json"
 PLAN_LOG = STATE_DIR / "optimizer_log.csv"
@@ -94,7 +98,14 @@ OPTIMIZER_DEFAULTS = {
     "max_discharge_current": 95,
     "horizon_hours": 36,
     "soc_step": 5,
-    "max_writes_per_day": 24,
+    "plan_writes_per_hour": 4,
+    "plan_writes_per_day": 30,
+    "charge_writes_per_hour": 4,
+    "charge_writes_per_day": 40,
+    "test_writes_per_day": 100,
+    "loop_max_repeats": 3,
+    "loop_window_hours": 2,
+    "storm_priority_hours": 6,
     "charge_control_minutes": 10,
     "late_charge_preference": 0.0001,
     "pv_correction_min_hours": 2,
@@ -135,6 +146,8 @@ def load_settings(config_path: Path) -> tuple[dict, dict, Tariff, dict]:
     with config_path.open("rb") as f:
         cfg = tomllib.load(f)
     s = {**OPTIMIZER_DEFAULTS, **cfg.get("optimizer", {})}
+    if "max_writes_per_day" in cfg.get("optimizer", {}) and "plan_writes_per_day" not in cfg.get("optimizer", {}):
+        s["plan_writes_per_day"] = cfg["optimizer"]["max_writes_per_day"]  # older configurations
     st = {**STORM_DEFAULTS, **cfg.get("storm", {})}
     for key in ("latitude", "longitude", "timezone"):  # location: [optimizer] or [storm]
         s.setdefault(key, st.get(key))
@@ -497,7 +510,70 @@ class Optimizer:
     def grid_ok(self, r) -> bool:
         return r[REG_GRID_STATUS] == 1 and not self.assume_outage
 
-    def write_profile(self, profile: dict, label: str, r: dict, force: bool = False) -> None:
+    # -- write limits
+    def test_mode_until(self) -> datetime | None:
+        try:
+            until = datetime.fromisoformat(json.loads(TEST_MODE_FILE.read_text())["until"])
+        except (FileNotFoundError, KeyError, ValueError):
+            return None
+        return until if until > datetime.now(self.s["tz"]) else None
+
+    def check_control_files(self, now: datetime) -> None:
+        if RESET_WRITES_FILE.exists():
+            RESET_WRITES_FILE.unlink(missing_ok=True)
+            self.state["write_log"] = {}
+            self.state.pop("last_write", None)
+            self.persist()
+            log(f"[{now:%H:%M}] Write counters reset (--reset-write-count).")
+        until = self.test_mode_until()
+        active = until is not None
+        if active != self.state.get("test_mode", False):
+            self.state["test_mode"] = active
+            self.persist()
+            log(f"[{now:%H:%M}] Test mode " + (f"ON until {until:%d/%m %H:%M}: no hourly limit, "
+                f"{self.s['test_writes_per_day']} plan writes per day." if active else "OFF: normal write limits."))
+
+    def write_allowed(self, kind: str, now: datetime) -> bool:
+        """kind: 'plan' or 'charge'. Counts the writes of the last hour and of today."""
+        wl = self.state.setdefault("write_log", {})
+        today = now.date().isoformat()
+        stamps = [t for t in wl.get(kind, []) if t.startswith(today)]
+        wl[kind] = stamps
+        last_hour = sum(1 for t in stamps if datetime.fromisoformat(t) > now - timedelta(hours=1))
+        test = self.test_mode_until() is not None
+        per_hour = None if test and kind == "plan" else self.s[f"{kind}_writes_per_hour"]
+        per_day = self.s["test_writes_per_day"] if test and kind == "plan" else self.s[f"{kind}_writes_per_day"]
+        if per_hour is not None and last_hour >= per_hour:
+            log(f"  WARNING: {kind} write limit reached ({per_hour} per hour), not writing.")
+            return False
+        if len(stamps) >= per_day:
+            log(f"  WARNING: {kind} write limit reached ({per_day} per day), not writing.")
+            return False
+        return True
+
+    def is_loop(self, changes_key: str, now: datetime) -> bool:
+        """True if this same change has been written loop_max_repeats times in a row within
+        loop_window_hours: the inverter keeps reverting it, so insisting would only wear its
+        memory. Only consecutive repeats count, so alternating writes (e.g. several outages
+        with the normal plan in between) are never blocked."""
+        last = self.state.get("last_write", {})
+        if last.get("key") != changes_key:
+            return False
+        window_start = now - timedelta(hours=self.s["loop_window_hours"])
+        return datetime.fromisoformat(last["first"]) > window_start and last["count"] >= self.s["loop_max_repeats"]
+
+    def record_write(self, changes_key: str, stamp: str, now: datetime) -> None:
+        last = self.state.get("last_write", {})
+        window_start = now - timedelta(hours=self.s["loop_window_hours"])
+        if last.get("key") == changes_key and datetime.fromisoformat(last["first"]) > window_start:
+            last["count"] += 1
+        else:
+            last = {"key": changes_key, "count": 1, "first": stamp}
+        self.state["last_write"] = last
+
+    def write_profile(self, profile: dict, label: str, r: dict, kind: str = "plan", priority: bool = False) -> None:
+        """Write a profile if it differs from the inverter. kind: 'plan' or 'charge' (separate
+        limits); priority writes (outage, storm reserve) skip the limits but not loop detection."""
         proposed, changes, errors, _ = compute_changes(profile, self.regmap, r)
         if errors:
             log(f"ERRORS in {label} (nothing written): " + "; ".join(errors))
@@ -509,16 +585,19 @@ class Optimizer:
         if not self.apply:
             log("  Dry run: nothing written.")
             return
-        today = datetime.now(self.s["tz"]).date().isoformat()
-        writes = self.state.setdefault("writes", {"date": today, "count": 0})
-        if writes["date"] != today:
-            writes.update(date=today, count=0)
-        if writes["count"] >= self.s["max_writes_per_day"] and not force:
-            log(f"  WARNING: daily write limit reached ({self.s['max_writes_per_day']}), not writing.")
+        now = datetime.now(self.s["tz"])
+        key = ",".join(f"{reg}={val}" for reg, val in sorted(proposed.items()) if r.get(reg) != val)
+        if self.is_loop(key, now):
+            log(f"  WARNING: the same change has been written {self.s['loop_max_repeats']} times in "
+                f"{self.s['loop_window_hours']} h and the inverter does not keep it; not insisting ({key}).")
+            return
+        if not priority and not self.write_allowed(kind, now):
             return
         save_backup("auto", self.map_path, r, reason=label)
         failures = write(self.conf, r, proposed)
-        writes["count"] += 1
+        stamp = now.isoformat(timespec="seconds")
+        self.state.setdefault("write_log", {}).setdefault(kind if not priority else "priority", []).append(stamp)
+        self.record_write(key, stamp, now)
         self.persist()
         log("  Written and verified." if not failures else "  WARNING: " + "; ".join(failures))
 
@@ -593,7 +672,7 @@ class Optimizer:
         log(f"[{now:%H:%M}] Charge control: {needed:.1f} kWh to {target} % in {remaining_h * 60:.0f} min, "
             f"solar surplus {surplus_now:.1f} kW now, {expected:.1f} kWh expected -> grid {grid_kw:.1f} kW "
             f"({current} A -> {amps} A)")
-        self.write_profile({"parameters": {"grid_charge_current": amps}}, "charge control", r)
+        self.write_profile({"parameters": {"grid_charge_current": amps}}, "charge control", r, kind="charge")
         self.last_current_write = time.monotonic()
 
     # -- outage protection
@@ -603,6 +682,7 @@ class Optimizer:
 
     def grid_check(self) -> None:
         now = datetime.now(self.s["tz"])
+        self.check_control_files(now)
         r = self.read(full=self.active_charge_slot(now) is not None)
         self.sample_pv(r, now)
         ok = self.grid_ok(r)
@@ -611,7 +691,7 @@ class Optimizer:
                 f"{self.st['outage_soc']} %.")
             self.state["outage"] = True
             self.persist()
-            self.write_profile(self.outage_profile(), "outage", self.read(full=True), force=True)
+            self.write_profile(self.outage_profile(), "outage", self.read(full=True), priority=True)
         elif ok and self.state.get("outage"):
             log(f"[{datetime.now(self.s['tz']):%H:%M}] Grid back: recalculating the plan.")
             self.state["outage"] = False
@@ -624,13 +704,14 @@ class Optimizer:
     def plan(self) -> None:
         s, st = self.s, self.st
         now = datetime.now(s["tz"])
+        self.check_control_files(now)
         r = self.read(full=True)
         if not self.grid_ok(r):
             if not self.state.get("outage"):
                 self.state["outage"] = True
                 self.persist()
             log(f"[{now:%Y-%m-%d %H:%M}] Grid down: keeping the battery available, no plan.")
-            self.write_profile(self.outage_profile(), "outage", r, force=True)
+            self.write_profile(self.outage_profile(), "outage", r, priority=True)
             return
 
         self.prices.update(now)
@@ -715,7 +796,9 @@ class Optimizer:
                                   "max_discharge_current": s["max_discharge_current"],
                                   "grid_peak_shaving": True, "grid_peak_shaving_power": s["grid_power_limit"]},
                    "tou": [{k: v for k, v in x.items() if k != "action"} for x in slots]}
-        self.write_profile(profile, "plan", r)
+        storm_soon = any(h["reserve"] and h["time"] < now + timedelta(hours=s_storm_hours)
+                         for h in hours) if (s_storm_hours := self.s["storm_priority_hours"]) else False
+        self.write_profile(profile, "plan (storm reserve)" if storm_soon else "plan", r, priority=storm_soon)
         self.charge_control(r, now, force=changed)
 
         STATE_DIR.mkdir(exist_ok=True)
@@ -767,9 +850,35 @@ def main():
                         help="Pretend a 2-hour storm starts in HOURS hours (testing, dry run only)")
     parser.add_argument("--assume-outage", action="store_true",
                         help="Pretend the grid is down (testing, dry run only)")
+    parser.add_argument("--test-mode", metavar="DURATION",
+                        help="Relax the plan write limits for a while, e.g. 4h or 30m ('off' to end it); "
+                             "read by the running service")
+    parser.add_argument("--reset-write-count", action="store_true",
+                        help="Reset the write counters of the running service")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Path to the configuration file (default: config.toml)")
     args = parser.parse_args()
+    if args.test_mode or args.reset_write_count:
+        STATE_DIR.mkdir(exist_ok=True)
+        if args.reset_write_count:
+            RESET_WRITES_FILE.touch()
+            print("Write counters will be reset by the service within a minute.")
+        if args.test_mode:
+            if args.test_mode.lower() == "off":
+                TEST_MODE_FILE.unlink(missing_ok=True)
+                print("Test mode off: normal write limits within a minute.")
+            else:
+                unit = args.test_mode[-1].lower()
+                try:
+                    amount = float(args.test_mode[:-1])
+                    delta = {"h": timedelta(hours=amount), "m": timedelta(minutes=amount)}[unit]
+                except (ValueError, KeyError):
+                    sys.exit("ERROR: --test-mode must be like 4h, 30m or off")
+                tz = ZoneInfo(load_settings(args.config)[0]["timezone"])
+                until = datetime.now(tz) + delta
+                TEST_MODE_FILE.write_text(json.dumps({"until": until.isoformat()}))
+                print(f"Test mode until {until:%d/%m %H:%M}: no hourly limit for plan writes.")
+        return
     if (args.assume_storm is not None or args.assume_outage) and (args.apply or args.daemon):
         sys.exit("ERROR: --assume-storm and --assume-outage are for testing (single dry run only)")
 

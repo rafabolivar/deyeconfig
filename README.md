@@ -323,9 +323,29 @@ up to 100 %, battery available the rest of the day.
 
 Slot SOC values are rounded up to `soc_step` (5 %), so small changes in the plan
 do not rewrite the inverter. Registers are written in contiguous blocks and read
-back to verify them, every write is preceded by a backup in `backups/`, and there
-is a daily limit (`max_writes_per_day`, 24) that never applies to the outage
-protection. The battery current limits (`max_charge_current`, 90 A;
+back to verify them, and every write is preceded by a backup in `backups/`.
+
+To protect the inverter's memory against a malfunction, writes are limited:
+
+| Write | Normal | Test mode |
+|---|---|---|
+| Plan changes | `plan_writes_per_hour` (4, one per cycle), `plan_writes_per_day` (30) | No hourly limit, `test_writes_per_day` (100) |
+| Real-time charge control (current only) | `charge_writes_per_hour` (4), `charge_writes_per_day` (40) | Same |
+| Outage protection, and plans with a storm reserve in the next `storm_priority_hours` (6) | Never limited | Never limited |
+
+**Loop detection**: if the same change is written `loop_max_repeats` (3) times in a
+row within `loop_window_hours` (2), the inverter is reverting it, and the service
+stops insisting and logs a warning. Only consecutive repeats count, so several
+outages in a row are never blocked.
+
+During development, `--test-mode` relaxes the plan limits for a while; it expires
+on its own and the running service picks it up within a minute:
+
+```bash
+.venv/bin/python deye_optimizer.py --test-mode 4h       # or 30m
+.venv/bin/python deye_optimizer.py --test-mode off
+.venv/bin/python deye_optimizer.py --reset-write-count  # if a limit was reached during tests
+``` The battery current limits (`max_charge_current`, 90 A;
 `max_discharge_current`, 95 A) and the grid power limit (`grid_power_limit`,
 4000 W, inverter peak shaving) are written with every plan.
 
@@ -442,7 +462,11 @@ Fallback only, used when the real PVPC prices are not available.
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Battery current limits (A) |
 | `horizon_hours` | 36 | Hours ahead to plan (limited by the published prices) |
 | `soc_step` | 5 | Slot SOC values are rounded up to this step (%) |
-| `max_writes_per_day` | 24 | Safety limit of plan writes per day |
+| `plan_writes_per_hour`, `plan_writes_per_day` | 4, 30 | Plan write limits |
+| `charge_writes_per_hour`, `charge_writes_per_day` | 4, 40 | Charge control write limits |
+| `test_writes_per_day` | 100 | Plan writes per day in test mode (no hourly limit) |
+| `storm_priority_hours` | 6 | Plans with a storm reserve within these hours are never limited |
+| `loop_max_repeats`, `loop_window_hours` | 3, 2 | Loop detection: same change in a row this many times within these hours |
 | `charge_control_minutes` | 10 | Minimum minutes between grid charge current changes |
 | `late_charge_preference` | 0.0001 | Preference (EUR/kWh per hour) for charging later at equal price |
 | `pv_correction_min_hours` | 2 | Measured daylight hours needed to correct today's solar forecast |

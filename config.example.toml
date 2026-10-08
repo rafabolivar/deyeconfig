@@ -133,9 +133,26 @@ max_discharge_current = 95
 horizon_hours = 36
 
 # Slot SOC values are rounded up to this step (%), so small changes do not
-# rewrite the inverter, and safety limit of plan writes per day.
+# rewrite the inverter.
 soc_step = 5
-max_writes_per_day = 24
+
+# Write limits (protection of the inverter's memory against a malfunction):
+#   plan writes            per hour (one per plan cycle) and per day
+#   charge control writes  separate counter, grid charge current only
+# Outage protection and plans with a storm reserve in the next
+# storm_priority_hours are never limited. In test mode (--test-mode) plan writes
+# have no hourly limit and test_writes_per_day per day.
+plan_writes_per_hour = 4
+plan_writes_per_day = 30
+charge_writes_per_hour = 4
+charge_writes_per_day = 40
+test_writes_per_day = 100
+storm_priority_hours = 6
+
+# Loop detection: if the same change is written loop_max_repeats times within
+# loop_window_hours (the inverter keeps reverting it), stop insisting.
+loop_max_repeats = 3
+loop_window_hours = 2
 
 # Real-time grid charge control: during a charge slot the grid charge current is
 # adjusted to the energy still needed, the time left and the measured solar surplus,

@@ -338,9 +338,31 @@ día normal de octubre: cargar de 15:00 a 17:00 (las horas más baratas) hasta e
 
 Los SOC de las franjas se redondean hacia arriba a pasos de `soc_step` (5 %), así que
 los cambios pequeños del plan no reescriben el inversor. Los registros se escriben
-en bloques contiguos y se vuelven a leer para verificarlos, antes de cada escritura
-se guarda una copia en `backups/`, y hay un límite diario (`max_writes_per_day`, 24)
-que nunca se aplica a la protección por corte. Los límites de corriente de la
+en bloques contiguos y se vuelven a leer para verificarlos, y antes de cada escritura
+se guarda una copia en `backups/`.
+
+Para proteger la memoria del inversor ante un mal funcionamiento, las escrituras
+están limitadas:
+
+| Escritura | Normal | Modo pruebas |
+|---|---|---|
+| Cambios de plan | `plan_writes_per_hour` (4, una por ciclo), `plan_writes_per_day` (30) | Sin límite por hora, `test_writes_per_day` (100) |
+| Control de carga en tiempo real (solo la corriente) | `charge_writes_per_hour` (4), `charge_writes_per_day` (40) | Igual |
+| Protección por corte, y planes con reserva de tormenta en las próximas `storm_priority_hours` (6) | Nunca limitadas | Nunca limitadas |
+
+**Detección de bucles**: si el mismo cambio se escribe `loop_max_repeats` (3) veces
+seguidas en `loop_window_hours` (2), el inversor lo está revirtiendo; el servicio
+deja de insistir y registra un aviso. Solo cuentan las repeticiones consecutivas, así
+que varios cortes seguidos nunca se bloquean.
+
+Durante el desarrollo, `--test-mode` relaja los límites de los planes durante un
+tiempo; caduca solo y el servicio en marcha lo detecta en menos de un minuto:
+
+```bash
+.venv/bin/python deye_optimizer.py --test-mode 4h       # o 30m
+.venv/bin/python deye_optimizer.py --test-mode off
+.venv/bin/python deye_optimizer.py --reset-write-count  # si se alcanzó un límite durante las pruebas
+``` Los límites de corriente de la
 batería (`max_charge_current`, 90 A; `max_discharge_current`, 95 A) y el límite de
 potencia de red (`grid_power_limit`, 4000 W, *peak shaving* del inversor) se
 escriben con cada plan.
@@ -459,7 +481,11 @@ Solo como respaldo, cuando no hay precios PVPC reales disponibles.
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Límites de corriente de la batería (A) |
 | `horizon_hours` | 36 | Horas que planifica (limitadas por los precios publicados) |
 | `soc_step` | 5 | Los SOC de las franjas se redondean hacia arriba a este paso (%) |
-| `max_writes_per_day` | 24 | Límite de seguridad de escrituras de planes por día |
+| `plan_writes_per_hour`, `plan_writes_per_day` | 4, 30 | Límites de escrituras de planes |
+| `charge_writes_per_hour`, `charge_writes_per_day` | 4, 40 | Límites de escrituras del control de carga |
+| `test_writes_per_day` | 100 | Escrituras de planes al día en modo pruebas (sin límite por hora) |
+| `storm_priority_hours` | 6 | Los planes con reserva de tormenta en estas horas nunca se limitan |
+| `loop_max_repeats`, `loop_window_hours` | 3, 2 | Detección de bucles: mismo cambio seguido estas veces en estas horas |
 | `charge_control_minutes` | 10 | Minutos mínimos entre cambios de la corriente de carga desde red |
 | `late_charge_preference` | 0.0001 | Preferencia (€/kWh por hora) por cargar más tarde a igual precio |
 | `pv_correction_min_hours` | 2 | Horas de sol medidas necesarias para corregir la previsión del día |
