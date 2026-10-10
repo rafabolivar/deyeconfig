@@ -255,7 +255,10 @@ come from REData, Red Eléctrica's public API (no key needed).
   1. Reads the SOC, battery capacity and voltage.
   2. Gets the PVPC prices for today and tomorrow (tomorrow's are published around
      20:15; until then the previous day's prices are used as an estimate, and the
-     `[tariff]` fallback prices if there is nothing else; missing or invalid prices
+     `[tariff]` fallback prices if there is nothing else. Prices close to zero or
+     slightly negative are real (sunny weekends); a day is only rejected if it looks
+     like a placeholder: wrong number of hours, several exact zeros or a flat day.
+     Missing or invalid prices
      are requested again in every cycle, and a warning is logged if tomorrow's are
      still missing at `price_warning_hour`) and, in one Open-Meteo
      call, the solar forecast on the plane of the panels and the storm forecast.
@@ -321,8 +324,11 @@ up to 100 %, battery available the rest of the day.
 
 ### Writes to the inverter
 
-Slot SOC values are rounded up to `soc_step` (5 %), so small changes in the plan
-do not rewrite the inverter. Registers are written in contiguous blocks and read
+Slot SOC values are rounded up to `soc_step` (5 %), and **a new plan is only written
+if it is worth it**: the service simulates, with the same updated data, the cost of
+keeping the slots the inverter already has and the cost of the new slots, and only
+writes if the new plan saves at least `min_saving` (0.03 EUR). Changes in the safety
+parameters (grid charging, current limits, peak shaving) are always written. Registers are written in contiguous blocks and read
 back to verify them, and every write is preceded by a backup in `backups/`.
 
 To protect the inverter's memory against a malfunction, writes are limited:
@@ -456,12 +462,13 @@ Fallback only, used when the real PVPC prices are not available.
 | `min_soc`, `max_soc` | 15, 100 | Battery range used by the plan (%) |
 | `charge_efficiency`, `discharge_efficiency` | 0.95, 0.95 | Battery efficiencies |
 | `cycle_cost` | 0.01 | Battery wear cost per kWh discharged (EUR) |
-| `export_price` | 0.04 | Price paid for exported energy (EUR/kWh) |
+| `export_price` | 0.04 | Maximum price paid for exported energy (EUR/kWh); the hourly market price if lower |
 | `grid_power_limit` | 4000 | Maximum grid draw (W, inverter peak shaving) |
 | `max_grid_charge_current` | 65 | Maximum grid charge current (A) |
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Battery current limits (A) |
 | `horizon_hours` | 36 | Hours ahead to plan (limited by the published prices) |
 | `soc_step` | 5 | Slot SOC values are rounded up to this step (%) |
+| `min_saving` | 0.03 | A new plan is only written if it saves at least this much (EUR) |
 | `plan_writes_per_hour`, `plan_writes_per_day` | 4, 30 | Plan write limits |
 | `charge_writes_per_hour`, `charge_writes_per_day` | 4, 40 | Charge control write limits |
 | `test_writes_per_day` | 100 | Plan writes per day in test mode (no hourly limit) |

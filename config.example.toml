@@ -136,6 +136,10 @@ horizon_hours = 36
 # rewrite the inverter.
 soc_step = 5
 
+# A new plan is only written if it saves at least this much (EUR) compared with
+# keeping the slots the inverter already has (safety parameters are always written).
+min_saving = 0.03
+
 # Write limits (protection of the inverter's memory against a malfunction):
 #   plan writes            per hour (one per plan cycle) and per day
 #   charge control writes  separate counter, grid charge current only

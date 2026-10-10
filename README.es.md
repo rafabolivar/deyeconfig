@@ -266,7 +266,10 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
   1. Lee el SOC, la capacidad y la tensión de la batería.
   2. Obtiene los precios PVPC de hoy y de mañana (los de mañana se publican hacia
      las 20:15; hasta entonces se usan los del día anterior como estimación, y los
-     precios de respaldo de `[tariff]` si no hay nada más; los precios que faltan o no
+     precios de respaldo de `[tariff]` si no hay nada más. Los precios cercanos a cero o
+     ligeramente negativos son reales (fines de semana soleados); un día solo se
+     rechaza si parece un relleno: número de horas incorrecto, varios ceros exactos o
+     todos los valores iguales. Los precios que faltan o no
      son válidos se vuelven a pedir en cada ciclo, y si a las `price_warning_hour`
      siguen faltando los de mañana se registra un aviso) y, en una sola consulta a
      Open-Meteo, la previsión solar sobre el plano de las placas y la de tormentas.
@@ -336,8 +339,12 @@ día normal de octubre: cargar de 15:00 a 17:00 (las horas más baratas) hasta e
 
 ### Escrituras en el inversor
 
-Los SOC de las franjas se redondean hacia arriba a pasos de `soc_step` (5 %), así que
-los cambios pequeños del plan no reescriben el inversor. Los registros se escriben
+Los SOC de las franjas se redondean hacia arriba a pasos de `soc_step` (5 %), y **un
+plan nuevo solo se escribe si compensa**: el servicio simula, con los mismos datos
+actualizados, el coste de mantener las franjas que ya tiene el inversor y el de las
+franjas nuevas, y solo escribe si el plan nuevo ahorra al menos `min_saving`
+(0,03 €). Los cambios en los parámetros de seguridad (carga desde red, límites de
+corriente, *peak shaving*) se escriben siempre. Los registros se escriben
 en bloques contiguos y se vuelven a leer para verificarlos, y antes de cada escritura
 se guarda una copia en `backups/`.
 
@@ -475,12 +482,13 @@ Solo como respaldo, cuando no hay precios PVPC reales disponibles.
 | `min_soc`, `max_soc` | 15, 100 | Rango de batería que usa el plan (%) |
 | `charge_efficiency`, `discharge_efficiency` | 0.95, 0.95 | Eficiencias de la batería |
 | `cycle_cost` | 0.01 | Coste de desgaste de la batería por kWh descargado (€) |
-| `export_price` | 0.04 | Precio cobrado por la energía exportada (€/kWh) |
+| `export_price` | 0.04 | Precio máximo cobrado por la energía exportada (€/kWh); el precio de mercado de la hora si es menor |
 | `grid_power_limit` | 4000 | Consumo máximo de red (W, *peak shaving* del inversor) |
 | `max_grid_charge_current` | 65 | Corriente máxima de carga desde red (A) |
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Límites de corriente de la batería (A) |
 | `horizon_hours` | 36 | Horas que planifica (limitadas por los precios publicados) |
 | `soc_step` | 5 | Los SOC de las franjas se redondean hacia arriba a este paso (%) |
+| `min_saving` | 0.03 | Un plan nuevo solo se escribe si ahorra al menos esta cantidad (€) |
 | `plan_writes_per_hour`, `plan_writes_per_day` | 4, 30 | Límites de escrituras de planes |
 | `charge_writes_per_hour`, `charge_writes_per_day` | 4, 40 | Límites de escrituras del control de carga |
 | `test_writes_per_day` | 100 | Escrituras de planes al día en modo pruebas (sin límite por hora) |

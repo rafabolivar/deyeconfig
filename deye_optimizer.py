@@ -98,6 +98,7 @@ OPTIMIZER_DEFAULTS = {
     "max_discharge_current": 95,
     "horizon_hours": 36,
     "soc_step": 5,
+    "min_saving": 0.03,
     "plan_writes_per_hour": 4,
     "plan_writes_per_day": 30,
     "charge_writes_per_hour": 4,
@@ -195,13 +196,16 @@ def fetch_day_prices(d: date, tz) -> dict[str, float]:
     return prices
 
 
-MIN_VALID_PRICE = 0.01  # EUR/kWh: PVPC includes tolls and charges, so it is never this low
-
-
 def valid_day(prices: dict[str, float]) -> bool:
-    """A day is valid with 23-25 hourly prices (DST days) that are all plausible.
-    REData sometimes publishes a day filled with zeros before the real prices."""
-    return 23 <= len(prices) <= 25 and all(v >= MIN_VALID_PRICE for v in prices.values())
+    """A day is valid with 23-25 hourly prices (DST days) that are not a placeholder.
+    REData sometimes publishes a day filled with zeros before the real prices. Real prices
+    can be close to zero or even slightly negative (sunny weekends), so low values are
+    accepted; what is rejected is the placeholder pattern: several exact zeros or a flat day."""
+    values = list(prices.values())
+    if not 23 <= len(values) <= 25:
+        return False
+    exact_zeros = sum(1 for v in values if v == 0)
+    return exact_zeros < 6 and max(values) - min(values) > 1e-6
 
 
 class PriceCache:
@@ -350,7 +354,7 @@ class Model:
                                   max(0.0, self.grid_kw * h["frac"] - imp))
                 soc += grid_charge * self.eff_c
                 imp += grid_charge
-            cost += imp * h["price"] - exp * self.s["export_price"] + discharge * self.s["cycle_cost"]
+            cost += imp * h["price"] - exp * min(self.s["export_price"], max(h["price"], 0.0)) + discharge * self.s["cycle_cost"]
             if soc < h["reserve"] - 1e-6:  # storm protection: being below the reserve is expensive
                 cost += (h["reserve"] - soc) * self.st["shortfall_penalty"]
             if detail:
@@ -359,6 +363,35 @@ class Model:
         terminal = sorted(h["price"] for h in hours)[len(hours) // 2]  # value of the energy left
         cost -= (soc - self.min) * self.eff_d * terminal
         return (cost, rows) if detail else cost
+
+    def simulate_layout(self, hours, soc0, layout) -> float:
+        """Cost of a Time Of Use layout as the inverter would apply it. layout: per hour
+        (floor kWh, grid charge target kWh or None). Same cost terms as the plan."""
+        soc, cost = soc0, 0.0
+        for h, (floor, target) in zip(hours, layout):
+            floor = max(self.min, floor)
+            f = h["frac"]
+            imp = exp = pv_charge = discharge = 0.0
+            net = h["pv"] - h["load"]
+            if net >= 0:
+                pv_charge = min(net, max(0.0, (self.max - soc) / self.eff_c), self.max_charge_kw * f)
+                soc += pv_charge * self.eff_c
+                exp = net - pv_charge
+            else:
+                need = -net
+                discharge = min(need, max(0.0, (soc - floor) * self.eff_d), self.max_discharge_kw * f)
+                soc -= discharge / self.eff_d
+                imp = need - discharge
+            if target is not None and soc < target:
+                g = min(self.max_grid_charge_kw * f, (target - soc) / self.eff_c,
+                        max(0.0, self.max_charge_kw * f - pv_charge), max(0.0, self.grid_kw * f - imp))
+                soc += g * self.eff_c
+                imp += g
+            cost += imp * h["price"] - exp * min(self.s["export_price"], max(h["price"], 0.0)) + discharge * self.s["cycle_cost"]
+            if soc < h["reserve"] - 1e-6:
+                cost += (h["reserve"] - soc) * self.st["shortfall_penalty"]
+        terminal = sorted(h["price"] for h in hours)[len(hours) // 2]
+        return cost - (soc - self.min) * self.eff_d * terminal
 
     def optimize(self, hours, soc0, no_discharge=()):
         """Optimal plan by linear programming (HiGHS). Returns per hour: grid charge (kWh),
@@ -376,7 +409,8 @@ class Model:
         # tiny preference for charging later at equal price: leaves room for the sun before
         cost[G:G + n] = price + self.s["late_charge_preference"] * (n - np.arange(n))
         cost[D:D + n] = -price + self.s["cycle_cost"]
-        cost[C:C + n] = self.s["export_price"]  # solar stored instead of exported
+        export = np.minimum(self.s["export_price"], np.maximum(price, 0.0))  # surplus is paid at about the market price
+        cost[C:C + n] = export  # solar stored instead of exported
         cost[SH:SH + n] = self.st["shortfall_penalty"]
         cost[S + n - 1] = -self.eff_d * terminal
         A_eq, b_eq, A_ub, b_ub = [], [], [], []
@@ -472,6 +506,29 @@ def build_slots(hours, actions, soc, soc0, model, s, n_slots=6):
              "action": seg[1]} for k, seg in enumerate(segs)]
 
 
+def inverter_slots(r: dict, tou: dict) -> list[dict]:
+    """Time Of Use slots currently in the inverter, in the same format as build_slots."""
+    out = []
+    for i in range(tou["slots"]):
+        hhmm = r[tou["time"] + i]
+        charge = bool(r[tou["charge"] + i] & 1)
+        out.append({"slot": i + 1, "time": f"{hhmm // 100:02d}:{hhmm % 100:02d}", "soc": r[tou["soc"] + i],
+                    "grid_charge": charge, "action": "charge" if charge else "inverter"})
+    return out
+
+
+def slots_to_layout(slots: list[dict], hours: list[dict], cap: float) -> list[tuple[float, float | None]]:
+    """Per hour of the plan: (floor kWh, grid charge target kWh or None) from a slot table."""
+    starts = [int(x["time"][:2]) * 60 + int(x["time"][3:]) for x in slots]
+    layout = []
+    for h in hours:
+        minute = h["time"].hour * 60 + h["time"].minute
+        k = max((i for i, st_ in enumerate(starts) if st_ <= minute), default=len(slots) - 1)
+        soc = cap * slots[k]["soc"] / 100
+        layout.append((soc, soc if slots[k]["grid_charge"] else None))
+    return layout
+
+
 # ------------------------------------------------------------------ the service
 
 class Optimizer:
@@ -483,6 +540,7 @@ class Optimizer:
         self.prices = PriceCache(s["tz"], tariff, fallback, s["price_warning_hour"])
         self.state = load_state()
         self.last_slots = None
+        self.inverter_layout: list[dict] | None = None  # slots actually in the inverter
         self.plan_hours: list[dict] = []          # hours of the last plan (corrected solar, load)
         self.solar_raw: dict[str, float] = {}     # last solar forecast, uncorrected (kWh per hour)
         self.pv_actual: dict[str, float] = {}     # measured solar kWh per hour (today)
@@ -633,10 +691,11 @@ class Optimizer:
     # -- real-time grid charge control
     def active_charge_slot(self, now: datetime):
         """(target SOC %, slot end) if a charge slot of the last plan is active now."""
-        if not self.last_slots:
+        layout = self.inverter_layout or self.last_slots
+        if not layout:
             return None
-        starts = [int(x["time"][:2]) for x in self.last_slots]
-        for k, x in enumerate(self.last_slots):
+        starts = [int(x["time"][:2]) for x in layout]
+        for k, x in enumerate(layout):
             start, end = starts[k], starts[k + 1] if k + 1 < len(starts) else 24
             if start <= now.hour < end:
                 if not x["grid_charge"]:
@@ -798,7 +857,24 @@ class Optimizer:
                    "tou": [{k: v for k, v in x.items() if k != "action"} for x in slots]}
         storm_soon = any(h["reserve"] and h["time"] < now + timedelta(hours=s_storm_hours)
                          for h in hours) if (s_storm_hours := self.s["storm_priority_hours"]) else False
-        self.write_profile(profile, "plan (storm reserve)" if storm_soon else "plan", r, priority=storm_soon)
+
+        # Only write if it is worth it: compare the cost of keeping the inverter's current slots
+        # with the cost of the new slots (both simulated with the same, updated data)
+        tou = self.regmap["tou"]
+        current_slots = inverter_slots(r, tou)
+        cost_current = model.simulate_layout(hours, soc0, slots_to_layout(current_slots, hours, model.cap))
+        cost_new = model.simulate_layout(hours, soc0, slots_to_layout(slots, hours, model.cap))
+        saving = cost_current - cost_new
+        _, param_changes, _, _ = compute_changes({"parameters": profile["parameters"]}, self.regmap, r)
+        written_slots = current_slots
+        if param_changes or saving >= s["min_saving"]:
+            reason = "safety parameters" if param_changes and saving < s["min_saving"] else f"saves {saving:.2f} EUR"
+            self.write_profile(profile, ("plan (storm reserve)" if storm_soon else "plan") + f", {reason}",
+                               r, priority=storm_soon)
+            written_slots = slots
+        elif slots != current_slots and changed:
+            log(f"  Plan not written: it would save only {saving:.2f} EUR (min_saving {s['min_saving']:.2f}).")
+        self.inverter_layout = written_slots  # what the inverter has: used by the charge control
         self.charge_control(r, now, force=changed)
 
         STATE_DIR.mkdir(exist_ok=True)
