@@ -275,7 +275,10 @@ come from REData, Red Eléctrica's public API (no key needed).
      losses, a wear cost per kWh and the value of the energy left at the end.
      Solar charging comes first; the grid only completes what is worth buying.
   5. Builds the 6 Time Of Use slots and writes them only if they differ from the
-     inverter.
+     inverter. Hours priced at or below `free_charge_price` (0.01 EUR/kWh, e.g. sunny
+     weekends with near-zero or negative prices) are always charge slots up to
+     `max_soc`: the sun keeps priority and the grid only completes, so the battery
+     fills up even if the sun is weaker than forecast.
 - **Today's solar forecast is corrected with the measured production**: once at
   least `pv_correction_min_hours` (2) daylight hours have been measured, the rest of
   the day's forecast is scaled by the ratio measured / forecast, so the plan does not
@@ -469,6 +472,7 @@ Fallback only, used when the real PVPC prices are not available.
 | `horizon_hours` | 36 | Hours ahead to plan (limited by the published prices) |
 | `soc_step` | 5 | Slot SOC values are rounded up to this step (%) |
 | `min_saving` | 0.03 | A new plan is only written if it saves at least this much (EUR) |
+| `free_charge_price` | 0.01 | Hours priced at or below this (EUR/kWh) charge up to `max_soc` |
 | `plan_writes_per_hour`, `plan_writes_per_day` | 4, 30 | Plan write limits |
 | `charge_writes_per_hour`, `charge_writes_per_day` | 4, 40 | Charge control write limits |
 | `test_writes_per_day` | 100 | Plan writes per day in test mode (no hourly limit) |

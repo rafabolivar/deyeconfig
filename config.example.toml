@@ -140,6 +140,10 @@ soc_step = 5
 # keeping the slots the inverter already has (safety parameters are always written).
 min_saving = 0.03
 
+# Hours priced at or below this (EUR/kWh) are treated as free energy: charge up to
+# max_soc (the sun keeps priority, the grid only completes).
+free_charge_price = 0.01
+
 # Write limits (protection of the inverter's memory against a malfunction):
 #   plan writes            per hour (one per plan cycle) and per day
 #   charge control writes  separate counter, grid charge current only

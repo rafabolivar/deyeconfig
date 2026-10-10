@@ -288,7 +288,11 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
      valor de la energía que queda al final. El sol carga primero; la red solo
      completa lo que compensa comprar.
   5. Construye las 6 franjas Time Of Use y las escribe solo si son distintas de las
-     del inversor.
+     del inversor. Las horas con precio igual o inferior a `free_charge_price`
+     (0,01 €/kWh, por ejemplo fines de semana soleados con precios casi nulos o
+     negativos) son siempre franjas de carga hasta `max_soc`: el sol mantiene la
+     prioridad y la red solo completa, así que la batería se llena aunque haya menos
+     sol del previsto.
 - **La previsión solar del día se corrige con la producción medida**: en cuanto hay
   al menos `pv_correction_min_hours` (2) horas de sol medidas, la previsión del resto
   del día se ajusta con la proporción medida / prevista, para que el plan no compre
@@ -489,6 +493,7 @@ Solo como respaldo, cuando no hay precios PVPC reales disponibles.
 | `horizon_hours` | 36 | Horas que planifica (limitadas por los precios publicados) |
 | `soc_step` | 5 | Los SOC de las franjas se redondean hacia arriba a este paso (%) |
 | `min_saving` | 0.03 | Un plan nuevo solo se escribe si ahorra al menos esta cantidad (€) |
+| `free_charge_price` | 0.01 | Las horas con precio igual o inferior (€/kWh) cargan hasta `max_soc` |
 | `plan_writes_per_hour`, `plan_writes_per_day` | 4, 30 | Límites de escrituras de planes |
 | `charge_writes_per_hour`, `charge_writes_per_day` | 4, 40 | Límites de escrituras del control de carga |
 | `test_writes_per_day` | 100 | Escrituras de planes al día en modo pruebas (sin límite por hora) |

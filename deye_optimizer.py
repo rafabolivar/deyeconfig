@@ -99,6 +99,7 @@ OPTIMIZER_DEFAULTS = {
     "horizon_hours": 36,
     "soc_step": 5,
     "min_saving": 0.03,
+    "free_charge_price": 0.01,
     "plan_writes_per_hour": 4,
     "plan_writes_per_day": 30,
     "charge_writes_per_hour": 4,
@@ -819,10 +820,18 @@ class Optimizer:
         self.plan_hours = hours
         gc, dis, soc, deficit = model.optimize(hours, soc0)
         actions = hour_actions(gc, dis, deficit)
+        # Free energy: in hours priced at or below free_charge_price, charge up to max_soc.
+        # The sun keeps priority (the charge control only asks the grid for the rest); this
+        # makes sure the battery fills up even if the sun turns out weaker than forecast.
+        slot_soc = list(soc)
+        for k, h in enumerate(hours):
+            if h["price"] <= s["free_charge_price"]:
+                actions[k] = "charge"
+                slot_soc[k] = model.max
         hold = [a == "hold" for a in actions]
         cost = model.simulate(hours, soc0, list(gc), hold)
         baseline = model.simulate(hours, soc0, [0.0] * len(hours), [False] * len(hours))
-        slots = build_slots(hours, actions, soc, soc0, model, s)
+        slots = build_slots(hours, actions, slot_soc, soc0, model, s)
         need_kw = max([gc[k] / hours[k]["frac"] for k in range(min(24, len(gc)))] + [0])
         current = min(s["max_grid_charge_current"], max(10, math.ceil(need_kw * 1000 / voltage / 5) * 5))
 
