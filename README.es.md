@@ -286,7 +286,10 @@ la tarde en 27 de 31 días (unos 0,06 €/kWh de 14 a 17 h, frente a 0,18 de noc
      batería (la casa usa la red mientras está barata) que minimizan el coste total,
      teniendo en cuenta las pérdidas de la batería, un coste de desgaste por kWh y el
      valor de la energía que queda al final. El sol carga primero; la red solo
-     completa lo que compensa comprar.
+     completa lo que compensa comprar. La energía exportada se valora al precio del
+     mercado mayorista de cada hora (también de REData, nunca negativo), que es como se
+     compensan los excedentes; cada plan registra la energía que se prevé exportar en
+     las próximas 24 horas y su valor.
   5. Construye las 6 franjas Time Of Use y las escribe solo si son distintas de las
      del inversor. Las horas con precio igual o inferior a `free_charge_price`
      (0,01 €/kWh, por ejemplo fines de semana soleados con precios casi nulos o
@@ -486,7 +489,7 @@ Solo como respaldo, cuando no hay precios PVPC reales disponibles.
 | `min_soc`, `max_soc` | 15, 100 | Rango de batería que usa el plan (%) |
 | `charge_efficiency`, `discharge_efficiency` | 0.95, 0.95 | Eficiencias de la batería |
 | `cycle_cost` | 0.01 | Coste de desgaste de la batería por kWh descargado (€) |
-| `export_price` | 0.04 | Precio máximo cobrado por la energía exportada (€/kWh); el precio de mercado de la hora si es menor |
+| `export_price` | 0.04 | Valor de la energía exportada (€/kWh, limitado por el PVPC) solo si no se dispone del precio de mercado de la hora |
 | `grid_power_limit` | 4000 | Consumo máximo de red (W, *peak shaving* del inversor) |
 | `max_grid_charge_current` | 65 | Corriente máxima de carga desde red (A) |
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Límites de corriente de la batería (A) |

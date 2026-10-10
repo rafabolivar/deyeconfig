@@ -63,6 +63,7 @@ STATE_FILE = STATE_DIR / "optimizer.json"
 TEST_MODE_FILE = STATE_DIR / "test_mode.json"      # written by --test-mode, read by the service
 RESET_WRITES_FILE = STATE_DIR / "reset_writes"     # written by --reset-write-count
 PRICE_CACHE = STATE_DIR / "prices.json"
+SPOT_CACHE = STATE_DIR / "spot.json"  # wholesale market price per hour (value of exported energy)
 PLAN_FILE = STATE_DIR / "optimizer_plan.json"
 PLAN_LOG = STATE_DIR / "optimizer_log.csv"
 REDATA_API = "https://apidatos.ree.es/es/datos/mercados/precios-mercados-tiempo-real"
@@ -183,18 +184,23 @@ def save_state(state: dict) -> None:
 
 # ------------------------------------------------------------------ prices (REData)
 
-def fetch_day_prices(d: date, tz) -> dict[str, float]:
+def fetch_day_prices(d: date, tz) -> tuple[dict[str, float], dict[str, float]]:
+    """PVPC price (tolls and charges included) and wholesale market price (spot, used to value
+    exported energy), in EUR/kWh per hour. The spot price comes in 15-minute steps: hourly mean."""
     url = f"{REDATA_API}?start_date={d}T00:00&end_date={d}T23:59&time_trunc=hour"
     req = urllib.request.Request(url, headers={"User-Agent": "deyeconfig", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.load(resp)
-    series = next(x for x in data["included"] if x["attributes"]["title"] == "PVPC")
-    prices = {}
-    for v in series["attributes"]["values"]:
-        t = datetime.fromisoformat(v["datetime"]).astimezone(tz)
-        if t.date() == d:
-            prices[t.replace(minute=0, second=0, microsecond=0).isoformat()] = v["value"] / 1000
-    return prices
+    series = {x["attributes"]["title"]: x["attributes"]["values"] for x in data["included"]}
+    def hourly(values):
+        sums: dict[str, list[float]] = {}
+        for v in values:
+            t = datetime.fromisoformat(v["datetime"]).astimezone(tz)
+            if t.date() == d:
+                sums.setdefault(t.replace(minute=0, second=0, microsecond=0).isoformat(), []).append(v["value"] / 1000)
+        return {k: sum(x) / len(x) for k, x in sums.items()}
+    spot_key = next((k for k in series if k.lower().startswith("precio mercado spot")), None)
+    return hourly(series["PVPC"]), hourly(series[spot_key]) if spot_key else {}
 
 
 def valid_day(prices: dict[str, float]) -> bool:
@@ -215,6 +221,7 @@ class PriceCache:
         self.warning_hour = warning_hour
         self.warned: set[str] = set()  # days already warned about
         self.prices: dict[str, float] = json.loads(PRICE_CACHE.read_text()) if PRICE_CACHE.exists() else {}
+        self.spot: dict[str, float] = json.loads(SPOT_CACHE.read_text()) if SPOT_CACHE.exists() else {}
 
     def day(self, d: date) -> dict[str, float]:
         return {k: v for k, v in self.prices.items() if k.startswith(d.isoformat())}
@@ -231,12 +238,13 @@ class PriceCache:
                     self.prices.pop(k)
                     changed = True
                 try:
-                    fetched = fetch_day_prices(d, self.tz)
+                    fetched, spot = fetch_day_prices(d, self.tz)
                 except Exception as e:
                     log(f"Prices for {d} not available yet ({e.__class__.__name__}).")
                     continue
                 if valid_day(fetched):
                     self.prices.update(fetched)
+                    self.spot.update(spot)
                     changed = True
                     log(f"PVPC prices for {d} received.")
                 else:
@@ -251,8 +259,18 @@ class PriceCache:
         if changed:
             cutoff = (now.date() - timedelta(days=7)).isoformat()
             self.prices = {k: v for k, v in self.prices.items() if k >= cutoff}
+            self.spot = {k: v for k, v in self.spot.items() if k >= cutoff}
             STATE_DIR.mkdir(exist_ok=True)
             PRICE_CACHE.write_text(json.dumps(self.prices, indent=1, sort_keys=True))
+            SPOT_CACHE.write_text(json.dumps(self.spot, indent=1, sort_keys=True))
+
+    def export_value(self, t: datetime, price: float, max_value: float) -> float:
+        """Value of 1 kWh exported in hour t: the market price (never negative); if unknown,
+        the PVPC price capped at max_value."""
+        spot = self.spot.get(t.isoformat())
+        if spot is not None:
+            return max(0.0, spot)
+        return min(max_value, max(0.0, price))
 
     def get(self, t: datetime) -> tuple[float, str]:
         """(price, source): 'pvpc', 'previous day' or 'tariff'."""
@@ -355,7 +373,7 @@ class Model:
                                   max(0.0, self.grid_kw * h["frac"] - imp))
                 soc += grid_charge * self.eff_c
                 imp += grid_charge
-            cost += imp * h["price"] - exp * min(self.s["export_price"], max(h["price"], 0.0)) + discharge * self.s["cycle_cost"]
+            cost += imp * h["price"] - exp * h.get("export", min(self.s["export_price"], max(h["price"], 0.0))) + discharge * self.s["cycle_cost"]
             if soc < h["reserve"] - 1e-6:  # storm protection: being below the reserve is expensive
                 cost += (h["reserve"] - soc) * self.st["shortfall_penalty"]
             if detail:
@@ -388,7 +406,7 @@ class Model:
                         max(0.0, self.max_charge_kw * f - pv_charge), max(0.0, self.grid_kw * f - imp))
                 soc += g * self.eff_c
                 imp += g
-            cost += imp * h["price"] - exp * min(self.s["export_price"], max(h["price"], 0.0)) + discharge * self.s["cycle_cost"]
+            cost += imp * h["price"] - exp * h.get("export", min(self.s["export_price"], max(h["price"], 0.0))) + discharge * self.s["cycle_cost"]
             if soc < h["reserve"] - 1e-6:
                 cost += (h["reserve"] - soc) * self.st["shortfall_penalty"]
         terminal = sorted(h["price"] for h in hours)[len(hours) // 2]
@@ -410,7 +428,7 @@ class Model:
         # tiny preference for charging later at equal price: leaves room for the sun before
         cost[G:G + n] = price + self.s["late_charge_preference"] * (n - np.arange(n))
         cost[D:D + n] = -price + self.s["cycle_cost"]
-        export = np.minimum(self.s["export_price"], np.maximum(price, 0.0))  # surplus is paid at about the market price
+        export = np.array([h.get("export", min(self.s["export_price"], max(h["price"], 0.0))) for h in hours])
         cost[C:C + n] = export  # solar stored instead of exported
         cost[SH:SH + n] = self.st["shortfall_penalty"]
         cost[S + n - 1] = -self.eff_d * terminal
@@ -814,6 +832,7 @@ class Optimizer:
             reserve_pct = max([pct for a, b, pct in windows if a < t + timedelta(hours=1) and t < b], default=0)
             ratio = self.pv_ratio if t.date() == now.date() else 1.0  # correct today's forecast with measurements
             hours.append({"time": t, "price": price, "frac": frac,
+                          "export": self.prices.export_value(t, price, s["export_price"]),
                           "pv": solar.get(t.isoformat(), 0.0) * frac * ratio,
                           "load": s["load_profile"][t.hour] * frac, "reserve": model.cap * reserve_pct / 100})
 
@@ -829,7 +848,9 @@ class Optimizer:
                 actions[k] = "charge"
                 slot_soc[k] = model.max
         hold = [a == "hold" for a in actions]
-        cost = model.simulate(hours, soc0, list(gc), hold)
+        cost, rows = model.simulate(hours, soc0, list(gc), hold, detail=True)
+        exp_kwh = sum(rw["export"] for rw in rows[:24])
+        exp_eur = sum(rw["export"] * h["export"] for rw, h in zip(rows[:24], hours[:24]))
         baseline = model.simulate(hours, soc0, [0.0] * len(hours), [False] * len(hours))
         slots = build_slots(hours, actions, slot_soc, soc0, model, s)
         need_kw = max([gc[k] / hours[k]["frac"] for k in range(min(24, len(gc)))] + [0])
@@ -846,7 +867,8 @@ class Optimizer:
             storm_txt = ""
         pv_txt = f" | solar {self.pv_kw(r):.1f} kW, forecast x{self.pv_ratio:.2f}" if self.pv_ratio != 1.0 or self.pv_kw(r) > 0 else ""
         log(f"[{now:%Y-%m-%d %H:%M}] SOC {r[REG_SOC]} %{pv_txt} | prices: {src} | {storm_txt}"
-            f"cost {cost:.2f} EUR vs {baseline:.2f} without plan" + ("" if changed else " | plan unchanged"))
+            f"cost {cost:.2f} EUR vs {baseline:.2f} without plan | export next 24 h {exp_kwh:.1f} kWh "
+            f"({exp_eur:.2f} EUR)" + ("" if changed else " | plan unchanged"))
         if changed:
             log("  hour    EUR/kWh solar load  action   SOC  reserve")
             for k, h in enumerate(hours[:24]):
@@ -889,6 +911,7 @@ class Optimizer:
         STATE_DIR.mkdir(exist_ok=True)
         PLAN_FILE.write_text(json.dumps({
             "time": now.isoformat(), "soc": r[REG_SOC], "cost": cost, "baseline": baseline,
+            "export_kwh_24h": round(exp_kwh, 2), "export_eur_24h": round(exp_eur, 3),
             "grid_charge_current": current,
             "storms": [(t.isoformat(), level, info) for t, level, info in storms], "slots": slots,
             "hours": [{"time": h["time"].isoformat(), "price": h["price"], "pv": round(h["pv"], 2),

@@ -274,6 +274,9 @@ come from REData, Red Eléctrica's public API (no key needed).
      the grid while it is cheap) that minimise the total cost, including battery
      losses, a wear cost per kWh and the value of the energy left at the end.
      Solar charging comes first; the grid only completes what is worth buying.
+     Exported energy is valued at the hourly wholesale market price (also from REData,
+     never negative), which is how the surplus is compensated; each plan logs the
+     energy expected to be exported in the next 24 hours and its value.
   5. Builds the 6 Time Of Use slots and writes them only if they differ from the
      inverter. Hours priced at or below `free_charge_price` (0.01 EUR/kWh, e.g. sunny
      weekends with near-zero or negative prices) are always charge slots up to
@@ -465,7 +468,7 @@ Fallback only, used when the real PVPC prices are not available.
 | `min_soc`, `max_soc` | 15, 100 | Battery range used by the plan (%) |
 | `charge_efficiency`, `discharge_efficiency` | 0.95, 0.95 | Battery efficiencies |
 | `cycle_cost` | 0.01 | Battery wear cost per kWh discharged (EUR) |
-| `export_price` | 0.04 | Maximum price paid for exported energy (EUR/kWh); the hourly market price if lower |
+| `export_price` | 0.04 | Value of exported energy (EUR/kWh, capped by the PVPC price) only if the hourly market price is not available |
 | `grid_power_limit` | 4000 | Maximum grid draw (W, inverter peak shaving) |
 | `max_grid_charge_current` | 65 | Maximum grid charge current (A) |
 | `max_charge_current`, `max_discharge_current` | 90, 95 | Battery current limits (A) |
