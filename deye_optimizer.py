@@ -868,12 +868,12 @@ class Optimizer:
         _, param_changes, _, _ = compute_changes({"parameters": profile["parameters"]}, self.regmap, r)
         written_slots = current_slots
         if param_changes or saving >= s["min_saving"]:
-            reason = "safety parameters" if param_changes and saving < s["min_saving"] else f"saves {saving:.2f} EUR"
+            reason = "safety parameters" if param_changes and saving < s["min_saving"] else f"saves {saving:.3f} EUR"
             self.write_profile(profile, ("plan (storm reserve)" if storm_soon else "plan") + f", {reason}",
                                r, priority=storm_soon)
             written_slots = slots
         elif slots != current_slots and changed:
-            log(f"  Plan not written: it would save only {saving:.2f} EUR (min_saving {s['min_saving']:.2f}).")
+            log(f"  Plan not written: it would save only {saving:.3f} EUR (min_saving {s['min_saving']:.3f}).")
         self.inverter_layout = written_slots  # what the inverter has: used by the charge control
         self.charge_control(r, now, force=changed)
 
