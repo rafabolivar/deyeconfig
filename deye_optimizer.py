@@ -233,6 +233,13 @@ class PriceCache:
         days = [now.date()] + ([now.date() + timedelta(days=1)] if now.hour >= 20 else [])
         changed = False
         for d in days:  # tomorrow's PVPC is published around 20:15
+            if self.has_day(d) and not any(k.startswith(d.isoformat()) for k in self.spot):
+                try:  # PVPC cached before the market price was used: fetch the market price
+                    _, spot = fetch_day_prices(d, self.tz)
+                    self.spot.update(spot)
+                    changed = bool(spot) or changed
+                except Exception as e:
+                    log(f"Market prices for {d} not available yet ({e.__class__.__name__}).")
             if not self.has_day(d):
                 for k in self.day(d):  # drop invalid or incomplete data for that day
                     self.prices.pop(k)
