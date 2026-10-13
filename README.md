@@ -15,6 +15,7 @@ power outages.
 - [Installation](#installation)
 - [Project structure](#project-structure)
 - [Connection test](#connection-test)
+- [Live status](#live-status)
 - [Reading the inverter configuration](#reading-the-inverter-configuration)
 - [Profiles](#profiles)
 - [Exporting the current configuration](#exporting-the-current-configuration)
@@ -79,6 +80,7 @@ Then check the connection:
 ```
 deye_test_connection.py   Connection test (read-only)
 deye_read_config.py       Show the full configuration and save a backup (read-only)
+deye_status.py            Live status: solar, battery, grid, house load, active slot (read-only)
 deye_apply.py             Apply a profile (dry run unless --apply)
 deye_export.py            Export the current configuration as a profile (read-only)
 deye_optimizer.py         Automatic mode: price optimizer with storm and outage protection
@@ -103,6 +105,18 @@ state/                    Automatic mode state, price cache and plans (ignored b
 
 Reads the inverter serial number, battery SOC and battery voltage. Read-only. If the
 inverter serial number matches the label on your inverter, the connection works.
+
+## Live status
+
+```bash
+.venv/bin/python deye_status.py              # show the status once
+.venv/bin/python deye_status.py --watch      # refresh every 10 seconds (Ctrl+C to exit)
+.venv/bin/python deye_status.py --watch 5    # refresh every 5 seconds
+```
+
+Shows the solar production, battery SOC and power (charging or discharging), grid
+(connected or down, buying or exporting), house load, the active Time Of Use slot
+and the battery current limits, including the ones requested by the BMS. Read-only.
 
 ## Reading the inverter configuration
 

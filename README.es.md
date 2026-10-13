@@ -14,6 +14,7 @@ reales de la electricidad de cada hora y protege la casa ante tormentas y cortes
 - [Instalación](#instalación)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Prueba de conexión](#prueba-de-conexión)
+- [Estado en vivo](#estado-en-vivo)
 - [Leer la configuración del inversor](#leer-la-configuración-del-inversor)
 - [Perfiles](#perfiles)
 - [Exportar la configuración actual](#exportar-la-configuración-actual)
@@ -85,6 +86,7 @@ Después comprueba la conexión:
 ```
 deye_test_connection.py   Prueba de conexión (solo lectura)
 deye_read_config.py       Muestra toda la configuración y guarda una copia (solo lectura)
+deye_status.py            Estado en vivo: sol, batería, red, consumo, franja activa (solo lectura)
 deye_apply.py             Aplica un perfil (simulación salvo con --apply)
 deye_export.py            Exporta la configuración actual como perfil (solo lectura)
 deye_optimizer.py         Modo automático: optimizador por precios con protección ante tormentas y cortes
@@ -109,6 +111,19 @@ state/                    Estado del modo automático, caché de precios y plane
 
 Lee el número de serie del inversor, el SOC y la tensión de la batería. Solo lectura.
 Si el número de serie coincide con la etiqueta de tu inversor, la conexión funciona.
+
+## Estado en vivo
+
+```bash
+.venv/bin/python deye_status.py              # muestra el estado una vez
+.venv/bin/python deye_status.py --watch      # lo actualiza cada 10 segundos (Ctrl+C para salir)
+.venv/bin/python deye_status.py --watch 5    # cada 5 segundos
+```
+
+Muestra la producción solar, el SOC y la potencia de la batería (cargando o
+descargando), la red (conectada o caída, comprando o exportando), el consumo de la
+casa, la franja Time Of Use activa y los límites de corriente de la batería,
+incluidos los que pide el BMS. Solo lectura.
 
 ## Leer la configuración del inversor
 
