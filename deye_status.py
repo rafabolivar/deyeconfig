@@ -12,8 +12,10 @@ Usage:
 import argparse
 import sys
 import time
+import tomllib
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from deye_common import DEFAULT_CONFIG, connect, load_config, read_block
 
@@ -54,8 +56,8 @@ def active_slot(r: dict[int, int], now: datetime) -> int:
     return max((i for i, st in enumerate(starts) if st <= minute), default=5)
 
 
-def show(r: dict[int, int]) -> None:
-    now = datetime.now()
+def show(r: dict[int, int], tz) -> None:
+    now = datetime.now(tz)
     pv1, pv2 = r[REG["pv1_power"]], r[REG["pv2_power"]]
     grid = s16(r[REG["grid_power"]])
     battery = s16(r[REG["battery_power"]])
@@ -85,6 +87,8 @@ def main():
                         help="Path to the configuration file (default: config.toml)")
     args = parser.parse_args()
     conf = load_config(args.config)
+    with args.config.open("rb") as f:  # local time zone (the inverter's slots are local time)
+        tz = ZoneInfo(tomllib.load(f).get("storm", {}).get("timezone", "Europe/Madrid"))
     try:
         while True:
             try:
@@ -96,7 +100,7 @@ def main():
             else:
                 if args.watch:
                     print("\033[2J\033[H", end="")  # clear the screen
-                show(r)
+                show(r, tz)
             if not args.watch:
                 break
             time.sleep(args.watch)
